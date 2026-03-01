@@ -4,7 +4,9 @@ from datetime import datetime, timedelta
 
 from missiontools.orbit.propagation import (
     propagate_analytical, sun_synchronous_inclination, sun_synchronous_orbit,
+    geostationary_orbit, highly_elliptical_orbit,
 )
+from missiontools.orbit.frames import eci_to_ecef
 from missiontools.orbit.constants import EARTH_MU, EARTH_J2, EARTH_SEMI_MAJOR_AXIS
 
 EPOCH = datetime(2025, 1, 1, 12, 0, 0)
@@ -418,3 +420,158 @@ def test_sso_orbit_propagatable():
 def test_sso_orbit_validation(kwargs, match):
     with pytest.raises(ValueError, match=match):
         sun_synchronous_orbit(**kwargs)
+
+
+# ===========================================================================
+# geostationary_orbit
+# ===========================================================================
+
+_GEO_EPOCH = np.datetime64('2025-01-01T12:00:00', 'us')
+_GEO_LON   = 45.0   # degrees East
+
+_REQUIRED_KEYS = {
+    'epoch', 'a', 'e', 'i', 'arg_p', 'raan', 'ma',
+    'central_body_mu', 'central_body_j2', 'central_body_radius',
+}
+
+
+def _geo():
+    return geostationary_orbit(longitude_deg=_GEO_LON, epoch=_GEO_EPOCH)
+
+
+class TestGeostationary:
+
+    def test_returns_required_keys(self):
+        assert set(_geo().keys()) == _REQUIRED_KEYS
+
+    def test_semi_major_axis(self):
+        """GEO semi-major axis should be ~42 164 km."""
+        np.testing.assert_allclose(_geo()['a'] / 1000.0, 42164.17, atol=1.0)
+
+    def test_circular_equatorial(self):
+        r = _geo()
+        assert r['e'] == 0.0
+        assert r['i'] == 0.0
+
+    def test_satellite_at_longitude_at_epoch(self):
+        """Propagating at epoch → ECEF longitude must equal the input."""
+        r = _geo()
+        t = np.array([_GEO_EPOCH])
+        r_eci, _ = propagate_analytical(t, **r, type='twobody')
+        r_ecef   = eci_to_ecef(r_eci, t)
+        lon_deg  = np.degrees(np.arctan2(r_ecef[0, 1], r_ecef[0, 0]))
+        np.testing.assert_allclose(lon_deg, _GEO_LON, atol=0.01)
+
+    def test_period_is_sidereal_day(self):
+        """Orbital period from semi-major axis must equal the sidereal day."""
+        r = _geo()
+        T = 2.0 * np.pi * np.sqrt(r['a'] ** 3 / EARTH_MU)
+        np.testing.assert_allclose(T, 86164.1, atol=1.0)
+
+    def test_default_epoch(self):
+        r = geostationary_orbit(longitude_deg=0.0)
+        assert r['epoch'] == np.datetime64('2000-01-01T12:00:00', 'us')
+
+    def test_propagates_without_error(self):
+        r = _geo()
+        t = np.array([_GEO_EPOCH, _GEO_EPOCH + np.timedelta64(3600, 's')])
+        pos, vel = propagate_analytical(t, **r, type='twobody')
+        assert pos.shape == (2, 3)
+        assert vel.shape == (2, 3)
+
+
+# ===========================================================================
+# highly_elliptical_orbit
+# ===========================================================================
+
+_HEO_EPOCH  = np.datetime64('2025-06-21T00:00:00', 'us')
+_HEO_PERIOD = 43200.0   # 12-hour Molniya-style orbit (s)
+_HEO_E      = 0.74
+_HEO_LON    = 40.0      # degrees East
+_HEO_TIME   = '14:00'   # local mean solar time at apogee
+
+
+def _heo(arg_p_deg=270.0):
+    return highly_elliptical_orbit(
+        period_s             = _HEO_PERIOD,
+        e                    = _HEO_E,
+        epoch                = _HEO_EPOCH,
+        apogee_solar_time    = _HEO_TIME,
+        apogee_longitude_deg = _HEO_LON,
+        arg_p_deg            = arg_p_deg,
+    )
+
+
+def _first_apogee(params, period_s):
+    """Return the time of the first apogee after epoch."""
+    n         = 2.0 * np.pi / period_s
+    delta_t_s = ((np.pi - params['ma']) % (2.0 * np.pi)) / n
+    return params['epoch'] + np.timedelta64(int(delta_t_s * 1e6), 'us')
+
+
+class TestHEO:
+
+    def test_returns_required_keys(self):
+        assert set(_heo().keys()) == _REQUIRED_KEYS
+
+    def test_semi_major_axis_from_period(self):
+        a_expected = (EARTH_MU * (_HEO_PERIOD / (2.0 * np.pi)) ** 2) ** (1.0 / 3.0)
+        np.testing.assert_allclose(_heo()['a'], a_expected, rtol=1e-10)
+
+    def test_critical_inclination_northern(self):
+        """arg_p ≈ 270° → i ≈ 63.435° (northern hemisphere apogee)."""
+        r = _heo(arg_p_deg=270.0)
+        np.testing.assert_allclose(np.degrees(r['i']), 63.4349, atol=0.001)
+
+    def test_critical_inclination_southern(self):
+        """arg_p ≈ 90° → i ≈ 116.565° (southern hemisphere apogee)."""
+        r = _heo(arg_p_deg=90.0)
+        np.testing.assert_allclose(np.degrees(r['i']), 116.5651, atol=0.001)
+
+    def test_apogee_longitude(self):
+        """At the first apogee, ECEF longitude must match the requested value."""
+        r      = _heo()
+        T_apo  = _first_apogee(r, _HEO_PERIOD)
+        r_eci, _ = propagate_analytical(np.array([T_apo]), **r, type='twobody')
+        r_ecef   = eci_to_ecef(r_eci, np.array([T_apo]))
+        lon_deg  = np.degrees(np.arctan2(r_ecef[0, 1], r_ecef[0, 0]))
+        np.testing.assert_allclose(lon_deg, _HEO_LON, atol=0.01)
+
+    def test_apogee_solar_time(self):
+        """At the first apogee, local mean solar time must match the request."""
+        r     = _heo()
+        T_apo = _first_apogee(r, _HEO_PERIOD)
+        # UTC hours at apogee
+        T_day = T_apo.astype('datetime64[D]').astype('datetime64[us]')
+        utc_h = float((T_apo - T_day).astype(np.float64) * 1e-6 / 3600.0)
+        # Local mean solar time = UTC + longitude / 15
+        lmst_h   = (utc_h + _HEO_LON / 15.0) % 24.0
+        expected = 14.0   # '14:00' = 14.0 decimal hours
+        assert min(abs(lmst_h - expected), 24.0 - abs(lmst_h - expected)) < 5.0 / 60.0
+
+    def test_propagates_without_error(self):
+        r = _heo()
+        t = np.array([_HEO_EPOCH, _HEO_EPOCH + np.timedelta64(3600, 's')])
+        pos, vel = propagate_analytical(t, **r, type='twobody')
+        assert pos.shape == (2, 3)
+
+    def test_invalid_eccentricity_zero(self):
+        with pytest.raises(ValueError, match="0 < e < 1"):
+            highly_elliptical_orbit(
+                period_s=43200, e=0.0, epoch=_HEO_EPOCH,
+                apogee_solar_time='12:00', apogee_longitude_deg=0.0,
+            )
+
+    def test_invalid_eccentricity_one(self):
+        with pytest.raises(ValueError, match="0 < e < 1"):
+            highly_elliptical_orbit(
+                period_s=43200, e=1.0, epoch=_HEO_EPOCH,
+                apogee_solar_time='12:00', apogee_longitude_deg=0.0,
+            )
+
+    def test_invalid_period(self):
+        with pytest.raises(ValueError, match="period_s"):
+            highly_elliptical_orbit(
+                period_s=-1, e=0.74, epoch=_HEO_EPOCH,
+                apogee_solar_time='12:00', apogee_longitude_deg=0.0,
+            )

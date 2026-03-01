@@ -5,7 +5,8 @@ from dataclasses import dataclass
 import numpy as np
 
 from .orbit.constants import EARTH_MU, EARTH_J2, EARTH_SEMI_MAJOR_AXIS
-from .orbit.propagation import propagate_analytical
+from .orbit.propagation import (propagate_analytical, sun_synchronous_orbit,
+                                 geostationary_orbit, highly_elliptical_orbit)
 
 _VALID_PROPAGATORS = frozenset({'twobody', 'j2'})
 
@@ -190,3 +191,137 @@ class Spacecraft:
         r, v = propagate_analytical(t, **self.keplerian_params,
                                     type=self.propagator_type)
         return {'t': t, 'r': r, 'v': v}
+
+    # ------------------------------------------------------------------
+    # Orbit-type factory classmethods
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def sunsync(
+            cls,
+            altitude_km:     float,
+            node_solar_time: str,
+            node_type:       str            = 'ascending',
+            epoch:           np.datetime64 | None = None,
+            ma_deg:          float          = 0.0,
+    ) -> 'Spacecraft':
+        """Create a circular sun-synchronous orbit spacecraft.
+
+        Delegates to :func:`~missiontools.orbit.sun_synchronous_orbit` for
+        element computation and always uses the ``'j2'`` propagator, since J2
+        is what drives the RAAN precession that maintains sun-synchronicity.
+
+        Parameters
+        ----------
+        altitude_km : float
+            Orbit altitude above the WGS84 equatorial surface (km).
+        node_solar_time : str
+            Local solar time at the node crossing (``'HH:MM'`` or
+            ``'HH:MM:SS'``, 24-hour clock).
+        node_type : str, optional
+            ``'ascending'`` (default) or ``'descending'``.
+        epoch : np.datetime64 | None, optional
+            Reference epoch.  Defaults to J2000.0.
+        ma_deg : float, optional
+            Mean anomaly at epoch (deg).  Defaults to 0 (spacecraft at the
+            ascending or descending node at epoch).
+
+        Returns
+        -------
+        Spacecraft
+            With ``propagator_type='j2'``.
+        """
+        params = sun_synchronous_orbit(
+            altitude            = altitude_km * 1000.0,
+            local_time_at_node  = node_solar_time,
+            node_type           = node_type,
+            epoch               = epoch,
+        )
+        params['ma'] = np.radians(ma_deg)
+        return cls.from_dict(params, propagator_type='j2')
+
+    @classmethod
+    def geostationary(
+            cls,
+            longitude_deg: float,
+            epoch:         np.datetime64 | None = None,
+            propagator:    str                  = 'twobody',
+    ) -> 'Spacecraft':
+        """Create a geostationary orbit spacecraft.
+
+        Delegates to :func:`~missiontools.orbit.geostationary_orbit`. The
+        satellite is placed at ``longitude_deg`` geographic longitude exactly
+        at the epoch.
+
+        Parameters
+        ----------
+        longitude_deg : float
+            Sub-satellite longitude at epoch (deg).  Any value is accepted;
+            values outside ``[-180, 180]`` are wrapped automatically.
+        epoch : np.datetime64 | None, optional
+            Reference epoch.  Defaults to J2000.0.
+        propagator : str, optional
+            ``'twobody'`` (default) or ``'j2'``.
+
+        Returns
+        -------
+        Spacecraft
+            Equatorial, circular orbit with ``i=0``, ``e=0``.
+        """
+        return cls.from_dict(
+            geostationary_orbit(longitude_deg, epoch=epoch),
+            propagator_type=propagator,
+        )
+
+    @classmethod
+    def heo(
+            cls,
+            period_s:             float,
+            e:                    float,
+            epoch:                np.datetime64,
+            apogee_solar_time:    str,
+            apogee_longitude_deg: float,
+            arg_p_deg:            float = 270.0,
+            propagator:           str   = 'twobody',
+    ) -> 'Spacecraft':
+        """Create a critically inclined highly elliptical orbit spacecraft.
+
+        Delegates to :func:`~missiontools.orbit.highly_elliptical_orbit`. The
+        inclination is set automatically to the critical inclination (63.435°
+        for northern-hemisphere apogee, 116.565° for southern) so the apsidal
+        line does not drift under J2.
+
+        Parameters
+        ----------
+        period_s : float
+            Orbital period (s).
+        e : float
+            Eccentricity (0 < e < 1).
+        epoch : np.datetime64
+            Reference epoch for the orbital elements.
+        apogee_solar_time : str
+            Local mean solar time at the apogee sub-satellite point
+            (``'HH:MM'`` or ``'HH:MM:SS'``, 24-hour clock).
+        apogee_longitude_deg : float
+            Geographic longitude of the apogee sub-satellite point (deg).
+        arg_p_deg : float, optional
+            Argument of perigee (deg).  270° (default) places the apogee in
+            the northern hemisphere; 90° places it in the southern hemisphere.
+        propagator : str, optional
+            ``'twobody'`` (default) or ``'j2'``.
+
+        Returns
+        -------
+        Spacecraft
+        """
+        return cls.from_dict(
+            highly_elliptical_orbit(
+                period_s             = period_s,
+                e                    = e,
+                epoch                = epoch,
+                apogee_solar_time    = apogee_solar_time,
+                apogee_longitude_deg = apogee_longitude_deg,
+                arg_p_deg            = arg_p_deg,
+            ),
+            propagator_type=propagator,
+        )

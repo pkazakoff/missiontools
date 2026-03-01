@@ -12,7 +12,9 @@ Planned functionality
 - Relative motion (CW / Hill's equations)
 """
 
-from .propagation import propagate_analytical, sun_synchronous_inclination, sun_synchronous_orbit
+from .propagation import (propagate_analytical, sun_synchronous_inclination,
+                          sun_synchronous_orbit, geostationary_orbit,
+                          highly_elliptical_orbit)
 from .frames import (gmst, eci_to_ecef, ecef_to_eci, geodetic_to_ecef,
                      eci_to_lvlh, lvlh_to_eci, sun_vec_eci)
 from .access import (earth_access, earth_access_intervals,
@@ -20,6 +22,7 @@ from .access import (earth_access, earth_access_intervals,
 
 __all__ = [
     'propagate_analytical', 'sun_synchronous_inclination', 'sun_synchronous_orbit',
+    'geostationary_orbit', 'highly_elliptical_orbit',
     'gmst', 'eci_to_ecef', 'ecef_to_eci', 'geodetic_to_ecef',
     'eci_to_lvlh', 'lvlh_to_eci', 'sun_vec_eci',
     'earth_access', 'earth_access_intervals',

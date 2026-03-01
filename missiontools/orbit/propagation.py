@@ -9,6 +9,49 @@ _N_SUN = 2.0 * np.pi / (365.25 * 86400.0)   # rad/s
 # J2000.0 epoch (same as frames.py)
 _J2000_US = np.datetime64('2000-01-01T12:00:00', 'us')
 
+# Earth mean sidereal rotation period (s) — used for GEO semi-major axis
+_SIDEREAL_DAY_S = 86164.100352
+
+# Critical inclination for frozen apsides (HEO design), in radians
+_I_CRIT = np.radians(63.4349)
+
+
+def _parse_hms(s: str) -> float:
+    """Parse a ``'HH:MM'`` or ``'HH:MM:SS'`` time string to decimal hours.
+
+    Parameters
+    ----------
+    s : str
+        24-hour time string in ``'HH:MM'`` or ``'HH:MM:SS'`` format.
+
+    Returns
+    -------
+    float
+        Decimal hours in [0, 24).
+
+    Raises
+    ------
+    ValueError
+        If the string cannot be parsed or the resulting time is outside
+        [0, 24).
+    """
+    parts = s.strip().split(':')
+    if len(parts) not in (2, 3):
+        raise ValueError(
+            f"Time string must be 'HH:MM' or 'HH:MM:SS', got '{s}'"
+        )
+    try:
+        h = int(parts[0]) + int(parts[1]) / 60.0 + (int(parts[2]) if len(parts) == 3 else 0) / 3600.0
+    except ValueError:
+        raise ValueError(
+            f"Time string must contain integer hour/minute/second fields, got '{s}'"
+        )
+    if not (0.0 <= h < 24.0):
+        raise ValueError(
+            f"Parsed time {h:.4f} h is outside [0, 24), got '{s}'"
+        )
+    return h
+
 
 def propagate_analytical(t: list[datetime] | npt.NDArray[np.datetime64],
                          epoch: datetime | np.datetime64,
@@ -353,28 +396,12 @@ def sun_synchronous_orbit(
     epoch_us = np.asarray(epoch, dtype='datetime64[us]')
 
     # --- parse local time string ---
-    parts = local_time_at_node.strip().split(':')
-    if len(parts) == 2:
-        hh, mm, ss = parts[0], parts[1], '0'
-    elif len(parts) == 3:
-        hh, mm, ss = parts[0], parts[1], parts[2]
-    else:
-        raise ValueError(
-            f"local_time_at_node must be 'HH:MM' or 'HH:MM:SS', "
-            f"got '{local_time_at_node}'"
-        )
     try:
-        lsol = int(hh) + int(mm) / 60.0 + int(ss) / 3600.0
-    except ValueError:
+        lsol = _parse_hms(local_time_at_node)
+    except ValueError as exc:
         raise ValueError(
-            f"local_time_at_node must contain integer hour/minute/second "
-            f"fields, got '{local_time_at_node}'"
-        )
-    if not (0.0 <= lsol < 24.0):
-        raise ValueError(
-            f"Parsed local time {lsol:.4f} h is outside [0, 24), "
-            f"got '{local_time_at_node}'"
-        )
+            f"local_time_at_node: {exc}"
+        ) from exc
 
     # --- validate node_type ---
     if node_type == 'ascending':
@@ -427,6 +454,212 @@ def sun_synchronous_orbit(
         'arg_p':               0.0,
         'raan':                raan,
         'ma':                  0.0,
+        'central_body_mu':     float(central_body_mu),
+        'central_body_j2':     float(central_body_j2),
+        'central_body_radius': float(central_body_radius),
+    }
+
+
+def geostationary_orbit(
+        longitude_deg:       float,
+        epoch:               datetime | np.datetime64 | None = None,
+        central_body_mu:     float = EARTH_MU,
+        central_body_j2:     float = EARTH_J2,
+        central_body_radius: float = EARTH_SEMI_MAJOR_AXIS,
+) -> dict:
+    """Return Keplerian elements for a geostationary orbit.
+
+    Computes the semi-major axis for a geosynchronous orbit (period equal to
+    one sidereal day) and sets the mean anomaly so the satellite is located at
+    ``longitude_deg`` in geographic longitude exactly at the ``epoch``.
+
+    The orbit is equatorial and circular: ``i = 0``, ``e = 0``,
+    ``RAAN = 0``, ``arg_p = 0``.  For ``i = 0`` these three angles are
+    degenerate; only their sum (the mean longitude) is physically meaningful,
+    which is captured entirely by ``ma``.
+
+    Parameters
+    ----------
+    longitude_deg : float
+        Geographic (sub-satellite) longitude at epoch (deg).  Any value is
+        accepted; values outside ``[-180, 180]`` are wrapped automatically.
+    epoch : datetime | np.datetime64 | None, optional
+        Epoch at which the satellite is at ``longitude_deg``.
+        Defaults to J2000.0 (``2000-01-01T12:00:00`` UTC).
+    central_body_mu : float, optional
+        Standard gravitational parameter (m³/s²).  Defaults to ``EARTH_MU``.
+    central_body_j2 : float, optional
+        Combined J2 parameter μ × J₂_dim × R² (m⁵/s²).
+        Defaults to ``EARTH_J2``.
+    central_body_radius : float, optional
+        Equatorial radius (m).  Defaults to ``EARTH_SEMI_MAJOR_AXIS``.
+
+    Returns
+    -------
+    dict
+        Keplerian parameter dict with keys ``epoch``, ``a``, ``e``,
+        ``i``, ``arg_p``, ``raan``, ``ma``, ``central_body_mu``,
+        ``central_body_j2``, ``central_body_radius``.
+    """
+    if epoch is None:
+        epoch = _J2000_US
+    epoch_us = np.asarray(epoch, dtype='datetime64[us]')
+
+    # Semi-major axis: Kepler III with sidereal day period
+    a = (central_body_mu * (_SIDEREAL_DAY_S / (2.0 * np.pi)) ** 2) ** (1.0 / 3.0)
+
+    # GMST at epoch: the ECI right ascension of the prime meridian
+    from .frames import gmst as _gmst
+    theta = float(_gmst(np.array([epoch_us]))[0])
+
+    # For i=0, RAAN=0, arg_p=0 the ECI angle of the satellite equals MA.
+    # Geographic longitude = ECI angle − GMST  →  MA = GMST + longitude_rad
+    ma = float((theta + np.radians(longitude_deg)) % (2.0 * np.pi))
+
+    return {
+        'epoch':               epoch_us,
+        'a':                   a,
+        'e':                   0.0,
+        'i':                   0.0,
+        'raan':                0.0,
+        'arg_p':               0.0,
+        'ma':                  ma,
+        'central_body_mu':     float(central_body_mu),
+        'central_body_j2':     float(central_body_j2),
+        'central_body_radius': float(central_body_radius),
+    }
+
+
+def highly_elliptical_orbit(
+        period_s:             float,
+        e:                    float,
+        epoch:                datetime | np.datetime64,
+        apogee_solar_time:    str,
+        apogee_longitude_deg: float,
+        arg_p_deg:            float = 270.0,
+        central_body_mu:      float = EARTH_MU,
+        central_body_j2:      float = EARTH_J2,
+        central_body_radius:  float = EARTH_SEMI_MAJOR_AXIS,
+) -> dict:
+    """Return Keplerian elements for a critically inclined highly elliptical orbit.
+
+    Constructs a Molniya-style HEO with the argument of perigee at the
+    *critical inclination* so that the apsidal line is frozen (no secular
+    drift in ``arg_p`` under J2).  The RAAN and initial mean anomaly are set
+    so that the first apogee after ``epoch`` occurs over the requested
+    geographic longitude at the requested local solar time.
+
+    Parameters
+    ----------
+    period_s : float
+        Orbital period (s).  Must be positive.
+    e : float
+        Eccentricity (dimensionless, 0 < e < 1).
+    epoch : datetime | np.datetime64
+        Reference epoch for the orbital elements.
+    apogee_solar_time : str
+        Local mean solar time at the apogee sub-satellite point,
+        formatted as ``'HH:MM'`` or ``'HH:MM:SS'`` (24-hour clock).
+    apogee_longitude_deg : float
+        Geographic longitude of the apogee sub-satellite point (deg).
+        Any value is accepted; values outside ``[-180, 180]`` wrap correctly.
+    arg_p_deg : float, optional
+        Argument of perigee (deg).  Defaults to 270° (apogee in northern
+        hemisphere).  Use 90° for a southern-hemisphere apogee.  The
+        inclination is chosen automatically as the critical inclination
+        consistent with ``arg_p_deg``:
+
+        * ``arg_p_deg`` closest to 270° → ``i ≈ 63.435°`` (northern)
+        * ``arg_p_deg`` closest to 90°  → ``i ≈ 116.565°`` (southern)
+    central_body_mu : float, optional
+        Standard gravitational parameter (m³/s²).  Defaults to ``EARTH_MU``.
+    central_body_j2 : float, optional
+        Combined J2 parameter μ × J₂_dim × R² (m⁵/s²).
+        Defaults to ``EARTH_J2``.
+    central_body_radius : float, optional
+        Equatorial radius (m).  Defaults to ``EARTH_SEMI_MAJOR_AXIS``.
+
+    Returns
+    -------
+    dict
+        Keplerian parameter dict with keys ``epoch``, ``a``, ``e``,
+        ``i``, ``arg_p``, ``raan``, ``ma``, ``central_body_mu``,
+        ``central_body_j2``, ``central_body_radius``.
+
+    Raises
+    ------
+    ValueError
+        If ``period_s ≤ 0``, ``e`` is outside ``(0, 1)``, or
+        ``apogee_solar_time`` cannot be parsed.
+
+    Notes
+    -----
+    The apogee placement uses a mean-solar-time approximation accurate to
+    within ~16 minutes (equation of time).  The RAAN is computed from the
+    exact GMST at the derived apogee time, so the geographic longitude
+    accuracy is limited only by the solar-time approximation.
+    """
+    if period_s <= 0.0:
+        raise ValueError(f"period_s must be positive, got {period_s}")
+    if not (0.0 < e < 1.0):
+        raise ValueError(
+            f"Eccentricity must satisfy 0 < e < 1 for a HEO, got e={e}"
+        )
+
+    epoch_us = np.asarray(epoch, dtype='datetime64[us]')
+
+    # --- Semi-major axis from period (Kepler III) ---
+    a = (central_body_mu * (period_s / (2.0 * np.pi)) ** 2) ** (1.0 / 3.0)
+
+    # --- Critical inclination ---
+    # arg_p closest to 90° → southern hemisphere (i = π − i_crit)
+    # arg_p closest to 270° → northern hemisphere (i = i_crit)
+    arg_p_mod = arg_p_deg % 360.0
+    if (arg_p_mod - 90.0) ** 2 < (arg_p_mod - 270.0) ** 2:
+        i_rad = np.pi - _I_CRIT   # southern hemisphere
+    else:
+        i_rad = _I_CRIT            # northern hemisphere (default)
+    arg_p_rad = np.radians(arg_p_deg)
+
+    # --- Parse apogee solar time ---
+    lmat_h = _parse_hms(apogee_solar_time)
+
+    # --- UTC time-of-day at apogee (mean solar time approximation) ---
+    # LST ≈ UTC + longitude/15  →  UTC ≈ LST − longitude/15
+    utc_apo_h = (lmat_h - apogee_longitude_deg / 15.0) % 24.0
+
+    # --- Find first T_apo strictly after epoch ---
+    epoch_day = epoch_us.astype('datetime64[D]').astype('datetime64[us]')
+    # Construct candidate T_apo on the same calendar day as epoch
+    T_apo_us = epoch_day + np.timedelta64(int(utc_apo_h * 3.6e9), 'us')
+    if T_apo_us <= epoch_us:
+        T_apo_us = T_apo_us + np.timedelta64(1, 'D')
+    delta_t_s = float((T_apo_us - epoch_us).astype(np.float64) * 1e-6)
+
+    # --- RAAN from ECI geometry at apogee ---
+    # At apogee (TA=180°), the ECI right ascension of the sub-satellite point is
+    # RA_apo = φ − RAAN, where φ = atan2(sin(arg_p)·cos(i), −cos(arg_p)).
+    # Inverting: RAAN = φ − RA_apo.
+    from .frames import gmst as _gmst
+    theta_gmst = float(_gmst(np.array([T_apo_us]))[0])
+    ra_apo = float((theta_gmst + np.radians(apogee_longitude_deg)) % (2.0 * np.pi))
+    phi  = float(np.arctan2(np.sin(arg_p_rad) * np.cos(i_rad),
+                            -np.cos(arg_p_rad)))
+    raan = float((phi - ra_apo) % (2.0 * np.pi))
+
+    # --- Initial mean anomaly ---
+    # MA = π at apogee; propagate backwards to epoch.
+    n  = 2.0 * np.pi / period_s
+    ma = float((np.pi - n * delta_t_s) % (2.0 * np.pi))
+
+    return {
+        'epoch':               epoch_us,
+        'a':                   a,
+        'e':                   float(e),
+        'i':                   float(i_rad),
+        'raan':                raan,
+        'arg_p':               float(arg_p_rad % (2.0 * np.pi)),
+        'ma':                  ma,
         'central_body_mu':     float(central_body_mu),
         'central_body_j2':     float(central_body_j2),
         'central_body_radius': float(central_body_radius),
