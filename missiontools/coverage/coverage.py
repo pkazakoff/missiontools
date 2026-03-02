@@ -180,6 +180,100 @@ def _make_offsets(t_start:  np.datetime64,
     return offs, t_start
 
 
+def _detect_transitions(
+        vis_batch: npt.NDArray[np.bool_],    # (T, M)
+        in_access: npt.NDArray[np.bool_],    # (M,)
+        t_batch:   npt.NDArray,              # (T,) datetime64[us]
+) -> list[tuple[np.datetime64, int, bool]]:
+    """Return time-ordered ``(t, point_idx, is_rising)`` for every state change."""
+    augmented = np.vstack([in_access[np.newaxis],
+                           vis_batch.astype(np.int8)]).astype(np.int8)
+    diffs = np.diff(augmented, axis=0)           # (T, M)  +1=AOS  -1=LOS
+    rising_t,  rising_m  = np.where(diffs > 0)
+    falling_t, falling_m = np.where(diffs < 0)
+    all_t = np.concatenate([t_batch[rising_t],  t_batch[falling_t]])
+    all_m = np.concatenate([rising_m,            falling_m])
+    all_r = np.concatenate([np.ones(len(rising_t),  dtype=bool),
+                             np.zeros(len(falling_t), dtype=bool)])
+    order = np.argsort(all_t, kind='stable')
+    return [(all_t[k], int(all_m[k]), bool(all_r[k])) for k in order]
+
+
+def _collect_access_intervals(
+        lat:               npt.NDArray,
+        lon:               npt.NDArray,
+        keplerian_params:  dict,
+        t_start:           np.datetime64,
+        t_end:             np.datetime64,
+        alt:               float,
+        el_min:            float,
+        propagator_type:   str,
+        max_step:          np.timedelta64,
+        batch_size:        int,
+        fov_pointing_lvlh, fov_half_angle,
+        sza_max,           sza_min,
+        *,
+        close_at_end:      bool,
+) -> list[list[tuple[np.datetime64, np.datetime64]]]:
+    """Collect per-point ``(AOS, LOS)`` ``datetime64[us]`` interval pairs.
+
+    Parameters
+    ----------
+    close_at_end : bool
+        If ``True``, any interval still open at ``t_end`` is closed with
+        ``t_end``.  If ``False``, open-ended intervals are discarded.
+    """
+    use_fov, pointing_lvlh_norm, cos_fov, use_sza, cos_sza_max_, cos_sza_min_ = \
+        _parse_constraints(fov_pointing_lvlh, fov_half_angle, sza_max, sza_min)
+
+    lat = np.asarray(lat, dtype=np.float64)
+    lon = np.asarray(lon, dtype=np.float64)
+    M   = len(lat)
+    if M == 0:
+        raise ValueError("lat/lon arrays must not be empty")
+
+    gs_ecef, up = _build_gs(lat, lon, alt)
+    sin_el_min  = float(np.sin(el_min))
+
+    offs, t_start_us = _make_offsets(t_start, t_end, max_step)
+    N = len(offs)
+
+    intervals:   list[list[tuple[np.datetime64, np.datetime64]]] = [[] for _ in range(M)]
+    current_aos: list[np.datetime64 | None] = [None] * M
+    in_access = np.zeros(M, dtype=np.bool_)
+
+    if N == 0:
+        return intervals
+
+    t_out = t_start_us + offs.astype('timedelta64[us]')
+
+    for b0 in range(0, N, batch_size):
+        b1      = min(b0 + batch_size, N)
+        t_batch = t_out[b0:b1]
+        vis     = _compute_vis_batch(t_batch, keplerian_params, propagator_type,
+                                     gs_ecef, up, sin_el_min,
+                                     use_fov, pointing_lvlh_norm, cos_fov,
+                                     use_sza, cos_sza_max_, cos_sza_min_)
+
+        for t_evt, m, is_rising in _detect_transitions(vis, in_access, t_batch):
+            if is_rising:
+                current_aos[m] = t_evt
+            else:
+                if current_aos[m] is not None:
+                    intervals[m].append((current_aos[m], t_evt))
+                    current_aos[m] = None
+
+        in_access = vis[-1]
+
+    if close_at_end:
+        t_end_dt = np.datetime64(t_end, 'us')
+        for m in range(M):
+            if in_access[m] and current_aos[m] is not None:
+                intervals[m].append((current_aos[m], t_end_dt))
+
+    return intervals
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -560,89 +654,35 @@ def revisit_time(
 
         ``global_mean`` : float — mean of per-point mean revisit times (s).
     """
-    use_fov, pointing_lvlh_norm, cos_fov, use_sza, cos_sza_max_, cos_sza_min_ = \
-        _parse_constraints(fov_pointing_lvlh, fov_half_angle, sza_max, sza_min)
-
     lat = np.asarray(lat, dtype=np.float64)
     lon = np.asarray(lon, dtype=np.float64)
     M   = len(lat)
-    if M == 0:
-        raise ValueError("lat/lon arrays must not be empty")
-
-    gs_ecef, up = _build_gs(lat, lon, alt)
-    sin_el_min  = float(np.sin(el_min))
-
-    offs, t_start_us = _make_offsets(t_start, t_end, max_step)
-    N = len(offs)
     _nan = np.full(M, np.nan)
-    if N == 0:
-        return {'max_revisit': _nan, 'mean_revisit': _nan,
-                'global_max': float('nan'), 'global_mean': float('nan')}
 
-    t_out = t_start_us + offs.astype('timedelta64[us]')  # (N,)
+    intervals = _collect_access_intervals(
+        lat, lon, keplerian_params, t_start, t_end,
+        alt, el_min, propagator_type, max_step, batch_size,
+        fov_pointing_lvlh, fov_half_angle, sza_max, sza_min,
+        close_at_end=False,
+    )
 
-    # Per-point state (all µs offsets from t_start)
-    in_access    = np.zeros(M, dtype=np.bool_)   # current access state
-    had_los      = np.zeros(M, dtype=np.bool_)   # seen at least one LOS?
-    prev_los_us  = np.zeros(M, dtype=np.int64)   # offset of most recent LOS
-    max_gap_us   = np.zeros(M, dtype=np.int64)
-    total_gap_us = np.zeros(M, dtype=np.int64)
-    gap_count    = np.zeros(M, dtype=np.int64)
+    max_revisit  = np.full(M, np.nan)
+    mean_revisit = np.full(M, np.nan)
+    for m, ivals in enumerate(intervals):
+        if len(ivals) >= 2:
+            gaps_us = np.array([
+                int((ivals[i + 1][0] - ivals[i][1]) / np.timedelta64(1, 'us'))
+                for i in range(len(ivals) - 1)
+            ], dtype=np.float64)
+            max_revisit[m]  = gaps_us.max()  / 1e6
+            mean_revisit[m] = gaps_us.mean() / 1e6
 
-    for b0 in range(0, N, batch_size):
-        b1      = min(b0 + batch_size, N)
-        b_offs  = offs[b0:b1]                          # (T,) µs offsets
-        t_batch = t_out[b0:b1]
-        vis     = _compute_vis_batch(t_batch, keplerian_params, propagator_type,
-                                     gs_ecef, up, sin_el_min,
-                                     use_fov, pointing_lvlh_norm, cos_fov,
-                                     use_sza, cos_sza_max_, cos_sza_min_)  # (T, M)
-
-        # Detect transitions: prepend last-known state as row 0
-        augmented = np.vstack([in_access[np.newaxis, :],
-                               vis.astype(np.int8)]).astype(np.int8)  # (T+1, M)
-        diffs = np.diff(augmented, axis=0)                             # (T,  M)
-        rising_t,  rising_m  = np.where(diffs > 0)
-        falling_t, falling_m = np.where(diffs < 0)
-
-        # Merge into a time-ordered list of (offset_us, m, is_rising)
-        all_offs = np.concatenate([b_offs[rising_t],  b_offs[falling_t]])
-        all_m    = np.concatenate([rising_m,           falling_m])
-        all_rise = np.concatenate([np.ones(len(rising_t),  dtype=np.bool_),
-                                   np.zeros(len(falling_t), dtype=np.bool_)])
-        order    = np.argsort(all_offs, kind='stable')
-
-        for k in order:
-            off_us   = int(all_offs[k])
-            m        = int(all_m[k])
-            is_rising = bool(all_rise[k])
-
-            if is_rising:
-                if had_los[m]:
-                    gap = off_us - prev_los_us[m]
-                    if gap > max_gap_us[m]:
-                        max_gap_us[m] = gap
-                    total_gap_us[m] += gap
-                    gap_count[m]    += 1
-            else:
-                prev_los_us[m] = off_us
-                had_los[m]     = True
-
-        in_access[:] = vis[-1]
-
-    # Convert µs → seconds; NaN for points with fewer than 2 accesses.
-    # Guard gap_count==0 with np.where before dividing to avoid a spurious
-    # RuntimeWarning (the guarded branch is discarded by the outer np.where).
-    has_gaps = gap_count > 0
-    safe_count = np.where(has_gaps, gap_count, 1)
-    max_rev  = np.where(has_gaps, max_gap_us              / 1e6, np.nan)
-    mean_rev = np.where(has_gaps, total_gap_us / safe_count / 1e6, np.nan)
-
+    has_gaps = ~np.isnan(max_revisit)
     return {
-        'max_revisit':  max_rev,
-        'mean_revisit': mean_rev,
-        'global_max':   float(np.nanmax(max_rev))  if has_gaps.any() else float('nan'),
-        'global_mean':  float(np.nanmean(mean_rev)) if has_gaps.any() else float('nan'),
+        'max_revisit':  max_revisit,
+        'mean_revisit': mean_revisit,
+        'global_max':   float(np.nanmax(max_revisit))  if has_gaps.any() else float('nan'),
+        'global_mean':  float(np.nanmean(mean_revisit)) if has_gaps.any() else float('nan'),
     }
 
 
@@ -763,6 +803,152 @@ def pointwise_coverage(
         'alt':     float(alt),
         'visible': visible,
     }
+
+
+def access_pointwise(
+        lat:               npt.NDArray[np.floating],
+        lon:               npt.NDArray[np.floating],
+        keplerian_params:  dict,
+        t_start:           np.datetime64,
+        t_end:             np.datetime64,
+        alt:               float | np.floating = 0.0,
+        el_min:            float | np.floating = 0.0,
+        propagator_type:   str = 'twobody',
+        max_step:          np.timedelta64 = np.timedelta64(30, 's'),
+        batch_size:        int = 1_000,
+        fov_pointing_lvlh: npt.NDArray | None = None,
+        fov_half_angle:    float | None = None,
+        sza_max:           float | None = None,
+        sza_min:           float | None = None,
+) -> list[list[tuple[np.datetime64, np.datetime64]]]:
+    """Return per-point access intervals over a time window.
+
+    Each element of the returned list corresponds to one ground point and
+    contains a list of ``(AOS, LOS)`` pairs — the times at which the
+    satellite acquired and lost line-of-sight to that point.
+
+    .. note::
+        Edge times are accurate to ``max_step``.  For sub-step accuracy on
+        individual points of interest use
+        :func:`~missiontools.orbit.access.earth_access_intervals`.
+
+    Parameters
+    ----------
+    lat, lon : npt.NDArray[np.floating]
+        Ground-point latitudes/longitudes (rad), shape ``(M,)``.
+    keplerian_params : dict
+        Orbital elements dict.
+    t_start, t_end : np.datetime64
+        Analysis window.
+    alt : float | np.floating, optional
+        Ground-point altitude above WGS84 (m).  Defaults to 0.
+    el_min : float | np.floating, optional
+        Minimum elevation angle (rad).  Defaults to 0 (horizon).
+    propagator_type : str, optional
+        ``'twobody'`` or ``'j2'``.
+    max_step : np.timedelta64, optional
+        Scan step.  Defaults to 30 s.
+    batch_size : int, optional
+        Time steps per propagation batch.  Defaults to 1 000.
+    fov_pointing_lvlh : npt.NDArray | None, optional
+        Sensor pointing direction in LVLH frame.
+    fov_half_angle : float | None, optional
+        FOV half-angle (rad).
+    sza_max : float | None, optional
+        Maximum solar zenith angle (rad).
+    sza_min : float | None, optional
+        Minimum solar zenith angle (rad).
+
+    Returns
+    -------
+    list[list[tuple[datetime64, datetime64]]]
+        ``result[m]`` is a list of ``(AOS, LOS)`` ``datetime64[us]`` pairs
+        for point ``m``.  An interval still open at ``t_end`` is closed with
+        ``t_end``.  Points with no access return an empty list.
+    """
+    return _collect_access_intervals(
+        lat, lon, keplerian_params, t_start, t_end,
+        alt, el_min, propagator_type, max_step, batch_size,
+        fov_pointing_lvlh, fov_half_angle, sza_max, sza_min,
+        close_at_end=True,
+    )
+
+
+def revisit_pointwise(
+        lat:               npt.NDArray[np.floating],
+        lon:               npt.NDArray[np.floating],
+        keplerian_params:  dict,
+        t_start:           np.datetime64,
+        t_end:             np.datetime64,
+        alt:               float | np.floating = 0.0,
+        el_min:            float | np.floating = 0.0,
+        propagator_type:   str = 'twobody',
+        max_step:          np.timedelta64 = np.timedelta64(30, 's'),
+        batch_size:        int = 1_000,
+        fov_pointing_lvlh: npt.NDArray | None = None,
+        fov_half_angle:    float | None = None,
+        sza_max:           float | None = None,
+        sza_min:           float | None = None,
+) -> list[npt.NDArray[np.timedelta64]]:
+    """Return per-point revisit gap arrays over a time window.
+
+    Each element of the returned list corresponds to one ground point and
+    contains an array of ``timedelta64[us]`` values — one per gap between
+    consecutive access windows (LOS of pass *i* to AOS of pass *i+1*).
+
+    .. note::
+        Accuracy is limited to ``max_step``.
+
+    Parameters
+    ----------
+    lat, lon : npt.NDArray[np.floating]
+        Ground-point latitudes/longitudes (rad), shape ``(M,)``.
+    keplerian_params : dict
+        Orbital elements dict.
+    t_start, t_end : np.datetime64
+        Analysis window.
+    alt : float | np.floating, optional
+        Ground-point altitude above WGS84 (m).  Defaults to 0.
+    el_min : float | np.floating, optional
+        Minimum elevation angle (rad).  Defaults to 0 (horizon).
+    propagator_type : str, optional
+        ``'twobody'`` or ``'j2'``.
+    max_step : np.timedelta64, optional
+        Scan step.  Defaults to 30 s.
+    batch_size : int, optional
+        Time steps per propagation batch.  Defaults to 1 000.
+    fov_pointing_lvlh : npt.NDArray | None, optional
+        Sensor pointing direction in LVLH frame.
+    fov_half_angle : float | None, optional
+        FOV half-angle (rad).
+    sza_max : float | None, optional
+        Maximum solar zenith angle (rad).
+    sza_min : float | None, optional
+        Minimum solar zenith angle (rad).
+
+    Returns
+    -------
+    list[NDArray[timedelta64]]
+        ``result[m]`` is an array of ``timedelta64[us]`` gaps for point ``m``.
+        Points with fewer than two access windows return an empty array.
+    """
+    intervals = _collect_access_intervals(
+        lat, lon, keplerian_params, t_start, t_end,
+        alt, el_min, propagator_type, max_step, batch_size,
+        fov_pointing_lvlh, fov_half_angle, sza_max, sza_min,
+        close_at_end=False,
+    )
+    result = []
+    for ivals in intervals:
+        if len(ivals) < 2:
+            result.append(np.array([], dtype='timedelta64[us]'))
+        else:
+            gaps = np.array(
+                [ivals[i + 1][0] - ivals[i][1] for i in range(len(ivals) - 1)],
+                dtype='timedelta64[us]',
+            )
+            result.append(gaps)
+    return result
 
 
 # ---------------------------------------------------------------------------

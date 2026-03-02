@@ -3,7 +3,8 @@ import pytest
 
 from missiontools.coverage import (sample_aoi, sample_region, sample_shapefile,
                                    sample_geography,
-                                   coverage_fraction, revisit_time, pointwise_coverage)
+                                   coverage_fraction, revisit_time, pointwise_coverage,
+                                   access_pointwise, revisit_pointwise)
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -613,6 +614,151 @@ def _make_two_feature_shapefile(tmp_path, rings_a, rings_b):
     w.close()
     return path
 
+
+# ===========================================================================
+# access_pointwise
+# ===========================================================================
+
+def _kw_ap(**extra):
+    return dict(keplerian_params=_ISS, t_start=_T_START, t_end=_T_END,
+                max_step=_STEP, **extra)
+
+
+class TestAccessPointwise:
+
+    def test_outer_len_equals_point_count(self):
+        lat, lon = _sample_uk(_N_PW_PTS)
+        result = access_pointwise(lat, lon, **_kw_ap())
+        assert len(result) == _N_PW_PTS
+
+    def test_inner_type(self):
+        lat, lon = _sample_uk(_N_PW_PTS)
+        result = access_pointwise(lat, lon, **_kw_ap())
+        assert all(isinstance(result[m], list) for m in range(_N_PW_PTS))
+
+    def test_interval_type(self):
+        lat, lon = _sample_uk(_N_PW_PTS)
+        result = access_pointwise(lat, lon, **_kw_ap())
+        for m in range(_N_PW_PTS):
+            for a, l in result[m]:
+                assert np.issubdtype(type(a), np.datetime64)
+                assert np.issubdtype(type(l), np.datetime64)
+
+    def test_aos_before_los(self):
+        lat, lon = _sample_uk(_N_PW_PTS)
+        result = access_pointwise(lat, lon, **_kw_ap())
+        for ivals in result:
+            for a, l in ivals:
+                assert a < l
+
+    def test_intervals_sorted_per_point(self):
+        lat, lon = _sample_uk(_N_PW_PTS)
+        result = access_pointwise(lat, lon, **_kw_ap())
+        for ivals in result:
+            aos = [a for a, _ in ivals]
+            assert aos == sorted(aos)
+
+    def test_consistent_with_pointwise_coverage(self):
+        """Every True cell in pointwise_coverage must fall inside an interval."""
+        lat, lon = _sample_uk(_N_PW_PTS)
+        kw = _kw_ap()
+        pw  = pointwise_coverage(lat, lon, **kw)
+        aps = access_pointwise(lat, lon, **kw)
+        t_arr = pw['t']
+        for m in range(_N_PW_PTS):
+            for ti, t in enumerate(t_arr):
+                if pw['visible'][ti, m]:
+                    covered = any(a <= t <= l for a, l in aps[m])
+                    assert covered, (
+                        f"point {m}: visible at t={t} but not in any interval"
+                    )
+
+    def test_empty_window(self):
+        lat, lon = _sample_uk(5)
+        kw = dict(keplerian_params=_ISS, t_start=_T_START, t_end=_T_START, max_step=_STEP)
+        result = access_pointwise(lat, lon, **kw)
+        assert all(result[m] == [] for m in range(5))
+
+    def test_fov_gives_subset(self):
+        """Adding a tight FOV constraint reduces or preserves interval count."""
+        lat, lon = _sample_uk(_N_PW_PTS)
+        base = access_pointwise(lat, lon, **_kw_ap())
+        fov  = access_pointwise(lat, lon, **_kw_ap(
+            fov_pointing_lvlh=np.array([0.0, 0.0, 1.0]),
+            fov_half_angle=np.radians(20.0),
+        ))
+        total_base = sum(len(iv) for iv in base)
+        total_fov  = sum(len(iv) for iv in fov)
+        assert total_fov <= total_base
+
+
+# ===========================================================================
+# revisit_pointwise
+# ===========================================================================
+
+class TestRevisitPointwise:
+
+    def test_outer_len_equals_point_count(self):
+        lat, lon = _sample_uk(_N_PW_PTS)
+        result = revisit_pointwise(lat, lon, **_kw_ap())
+        assert len(result) == _N_PW_PTS
+
+    def test_entries_are_ndarray_of_timedelta(self):
+        lat, lon = _sample_uk(_N_PW_PTS)
+        result = revisit_pointwise(lat, lon, **_kw_ap())
+        for arr in result:
+            assert isinstance(arr, np.ndarray)
+            assert np.issubdtype(arr.dtype, np.timedelta64)
+
+    def test_gaps_positive(self):
+        lat, lon = _sample_uk(_N_PW_PTS)
+        result = revisit_pointwise(lat, lon, **_kw_ap())
+        for arr in result:
+            if len(arr) > 0:
+                assert (arr > np.timedelta64(0, 'us')).all()
+
+    def test_consistent_with_revisit_time_max(self):
+        """Max gap in revisit_pointwise[m] must equal revisit_time max_revisit[m]."""
+        lat, lon = _sample_uk(_N_PW_PTS)
+        kw = _kw_ap()
+        rp  = revisit_pointwise(lat, lon, **kw)
+        rt  = revisit_time(lat, lon, **kw)
+        for m in range(_N_PW_PTS):
+            if len(rp[m]) > 0:
+                max_s = float(rp[m].max() / np.timedelta64(1, 'us')) / 1e6
+                np.testing.assert_allclose(max_s, rt['max_revisit'][m], rtol=1e-9)
+            else:
+                assert np.isnan(rt['max_revisit'][m])
+
+    def test_consistent_with_revisit_time_mean(self):
+        lat, lon = _sample_uk(_N_PW_PTS)
+        kw = _kw_ap()
+        rp  = revisit_pointwise(lat, lon, **kw)
+        rt  = revisit_time(lat, lon, **kw)
+        for m in range(_N_PW_PTS):
+            if len(rp[m]) > 0:
+                mean_s = float(rp[m].mean() / np.timedelta64(1, 'us')) / 1e6
+                np.testing.assert_allclose(mean_s, rt['mean_revisit'][m], rtol=1e-9)
+
+    def test_fewer_than_two_intervals_gives_empty(self):
+        """Points with ≤ 1 access window should have an empty gap array."""
+        lat, lon = _sample_uk(_N_PW_PTS)
+        aps = access_pointwise(lat, lon, **_kw_ap())
+        rp  = revisit_pointwise(lat, lon, **_kw_ap())
+        for m in range(_N_PW_PTS):
+            if len(aps[m]) < 2:
+                assert len(rp[m]) == 0
+
+    def test_empty_window(self):
+        lat, lon = _sample_uk(5)
+        kw = dict(keplerian_params=_ISS, t_start=_T_START, t_end=_T_START, max_step=_STEP)
+        result = revisit_pointwise(lat, lon, **kw)
+        assert all(len(arr) == 0 for arr in result)
+
+
+# ===========================================================================
+# sample_shapefile
+# ===========================================================================
 
 # A roughly 10° × 10° box centred on 0°N, 10°E (in degrees, lon before lat)
 _BOX_10E = [[(5.0, -5.0), (15.0, -5.0), (15.0, 5.0), (5.0, 5.0), (5.0, -5.0)]]
