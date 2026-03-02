@@ -1,3 +1,6 @@
+import re as _re
+from pathlib import Path
+
 import numpy as np
 import numpy.typing as npt
 from matplotlib.path import Path as _MplPath
@@ -5,6 +8,14 @@ from matplotlib.path import Path as _MplPath
 from ..orbit.frames import geodetic_to_ecef, eci_to_ecef, lvlh_to_eci, sun_vec_eci
 from ..orbit.propagation import propagate_analytical
 from ..orbit.constants import EARTH_MEAN_RADIUS
+
+# ---------------------------------------------------------------------------
+# Bundled Natural Earth geodata paths
+# ---------------------------------------------------------------------------
+
+_GEODATA_DIR = Path(__file__).parent / 'geodata'
+_NE_ADM0     = _GEODATA_DIR / 'ne_map_units'        / 'ne_50m_admin_0_map_units.shp'
+_NE_ADM1     = _GEODATA_DIR / 'ne_states_provinces' / 'ne_50m_admin_1_states_provinces.shp'
 
 
 # ---------------------------------------------------------------------------
@@ -836,6 +847,73 @@ def _load_shapefile(path, feature_index):
     return geom, crosses_am
 
 
+def _sample_from_geom(
+        geom,
+        crosses_am: bool,
+        point_density: float,
+) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
+    """Fibonacci-sphere sampling inside a shapely geometry.
+
+    Parameters
+    ----------
+    geom : shapely Polygon or MultiPolygon
+        Target geometry in geographic degrees (may have extended longitudes
+        if the polygon crosses the antimeridian).
+    crosses_am : bool
+        If True, PIP tests are also performed at ±360° longitude shifts.
+    point_density : float
+        Approximate area per sample point (m²).  Must be positive.
+
+    Returns
+    -------
+    lat : (M,) float64, radians
+    lon : (M,) float64, radians
+    """
+    import shapely as _shapely
+
+    # Area estimate from bounding box (spherical zone formula)
+    minx, miny, maxx, maxy = geom.bounds   # degrees
+    lat_lo = max(np.radians(miny), -np.pi / 2.0)
+    lat_hi = min(np.radians(maxy),  np.pi / 2.0)
+    lon_span_rad = np.radians(min(abs(maxx - minx), 360.0))
+    area_approx = (4.0 * np.pi * EARTH_MEAN_RADIUS**2
+                   * (np.sin(lat_hi) - np.sin(lat_lo)) / 2.0
+                   * lon_span_rad / (2.0 * np.pi))
+
+    n = max(1, int(np.round(area_approx / point_density)))
+
+    # Oversample globally and filter via PIP
+    area_frac  = max(area_approx / (4.0 * np.pi * EARTH_MEAN_RADIUS**2), 1e-9)
+    n_global   = max(n * 5, int(np.ceil(n / area_frac * 1.3)))
+    lat_r, lon_r = _fibonacci_sphere(n_global)
+
+    # Shapely expects degrees (lon, lat) = (x, y)
+    lon_deg = np.degrees(lon_r)
+    lat_deg = np.degrees(lat_r)
+
+    inside = _shapely.contains_xy(geom, lon_deg, lat_deg)
+    if crosses_am:
+        # Also test points shifted by ±360° to reach the unwrapped polygon
+        inside |= _shapely.contains_xy(geom, lon_deg + 360.0, lat_deg)
+        inside |= _shapely.contains_xy(geom, lon_deg - 360.0, lat_deg)
+
+    lat_in = lat_r[inside]
+    lon_in = lon_r[inside]
+
+    if len(lat_in) == 0:
+        raise ValueError(
+            "No sample points fell inside the geometry — "
+            "check that coordinates are in geographic degrees (WGS84 / EPSG:4326)."
+        )
+
+    if len(lat_in) > n:
+        idx    = np.round(np.linspace(0, len(lat_in) - 1, n)).astype(int)
+        lat_in = lat_in[idx]
+        lon_in = lon_in[idx]
+
+    return lat_in, lon_in
+
+
 def sample_shapefile(
         path: str,
         *,
@@ -879,52 +957,202 @@ def sample_shapefile(
     Requires ``pyshp`` and ``shapely`` (both declared as package
     dependencies).
     """
-    import shapely as _shapely
-
     if point_density <= 0:
         raise ValueError(f"point_density must be positive, got {point_density}")
 
     geom, crosses_am = _load_shapefile(path, feature_index)
+    return _sample_from_geom(geom, crosses_am, point_density)
 
-    # Area estimate from bounding box (spherical zone formula)
-    minx, miny, maxx, maxy = geom.bounds   # degrees
-    lat_lo = max(np.radians(miny), -np.pi / 2.0)
-    lat_hi = min(np.radians(maxy),  np.pi / 2.0)
-    lon_span_rad = np.radians(min(abs(maxx - minx), 360.0))
-    area_approx = (4.0 * np.pi * EARTH_MEAN_RADIUS**2
-                   * (np.sin(lat_hi) - np.sin(lat_lo)) / 2.0
-                   * lon_span_rad / (2.0 * np.pi))
 
-    n = max(1, int(np.round(area_approx / point_density)))
+# ---------------------------------------------------------------------------
+# Natural Earth geography helpers
+# ---------------------------------------------------------------------------
 
-    # Oversample globally and filter via PIP
-    area_frac  = max(area_approx / (4.0 * np.pi * EARTH_MEAN_RADIUS**2), 1e-9)
-    n_global   = max(n * 5, int(np.ceil(n / area_frac * 1.3)))
-    lat_r, lon_r = _fibonacci_sphere(n_global)
+def _load_ne_features(
+        path: str,
+        indices: list[int],
+) -> tuple:
+    """Load and union a specific subset of features from a Natural Earth shapefile.
 
-    # Shapely expects degrees (lon, lat) = (x, y)
-    lon_deg = np.degrees(lon_r)
-    lat_deg = np.degrees(lat_r)
+    Parameters
+    ----------
+    path : str
+        Path to the ``.shp`` file.
+    indices : list[int]
+        Feature indices to load and union.
 
-    inside = _shapely.contains_xy(geom, lon_deg, lat_deg)
-    if crosses_am:
-        # Also test points shifted by ±360° to reach the unwrapped polygon
-        inside |= _shapely.contains_xy(geom, lon_deg + 360.0, lat_deg)
-        inside |= _shapely.contains_xy(geom, lon_deg - 360.0, lat_deg)
+    Returns
+    -------
+    geom : shapely Polygon or MultiPolygon
+    crosses_am : bool
+    """
+    from shapely.ops import unary_union as _unary_union
 
-    lat_in = lat_r[inside]
-    lon_in = lon_r[inside]
+    geoms: list = []
+    crosses_am = False
+    for i in indices:
+        g, cam = _load_shapefile(path, i)
+        geoms.append(g)
+        crosses_am = crosses_am or cam
 
-    if len(lat_in) == 0:
-        raise ValueError(
-            "No sample points fell inside the shapefile geometry — "
-            "check that the file contains valid polygon features and that "
-            "coordinates are in geographic degrees (WGS84 / EPSG:4326)."
-        )
+    if not geoms:
+        raise ValueError("No features matched the requested indices.")
 
-    if len(lat_in) > n:
-        idx    = np.round(np.linspace(0, len(lat_in) - 1, n)).astype(int)
-        lat_in = lat_in[idx]
-        lon_in = lon_in[idx]
+    return (_unary_union(geoms) if len(geoms) > 1 else geoms[0]), crosses_am
 
-    return lat_in, lon_in
+
+def _find_ne_indices(geography: str) -> tuple[str, list[int]]:
+    """Resolve a geography string to a shapefile path and feature indices.
+
+    Detection order
+    ---------------
+    1. Slash pattern  ``'Country/Subdivision'``  → admin-1 by name
+    2. ISO 3166-2     ``'CA-QC'``               → admin-1 ``iso_3166_2``
+    3. ISO A2         ``'CA'``                   → admin-0 ``ISO_A2``
+    4. ISO A3         ``'CAN'``                  → admin-0 ``ISO_A3``
+    5. Name           ``'Canada'``               → admin-0 ``NAME`` (case-insensitive);
+                                                   fallback to admin-1 ``name``
+
+    Returns
+    -------
+    path : str
+        Absolute path to the matched shapefile.
+    indices : list[int]
+        Feature indices (one or more) to union.
+
+    Raises
+    ------
+    ValueError
+        If the geography string matches none of the above.
+    """
+    import shapefile as _pyshp
+
+    g = geography.strip()
+
+    # ── 1. Slash: "Country/Subdivision" ─────────────────────────────────────
+    if '/' in g:
+        country, subdivision = (s.strip() for s in g.split('/', 1))
+        cl = country.lower()
+        sl = subdivision.lower()
+        sf1 = _pyshp.Reader(str(_NE_ADM1))
+        idx = [i for i, r in enumerate(sf1.records())
+               if r.as_dict()['admin'].lower() == cl
+               and (r.as_dict()['name'].lower()    == sl
+                    or r.as_dict()['name_en'].lower() == sl)]
+        if not idx:
+            raise ValueError(
+                f"Subdivision {subdivision!r} not found in {country!r}. "
+                f"Sub-national (admin-1) data is available only for: "
+                f"Australia, Brazil, Canada, China, India, Indonesia, "
+                f"Russia, South Africa, United States of America."
+            )
+        return str(_NE_ADM1), idx
+
+    # ── 2. ISO 3166-2: "CA-QC" ──────────────────────────────────────────────
+    if _re.match(r'^[A-Z]{2}-[A-Z0-9]{1,3}$', g):
+        sf1 = _pyshp.Reader(str(_NE_ADM1))
+        idx = [i for i, r in enumerate(sf1.records())
+               if r.as_dict()['iso_3166_2'] == g]
+        if idx:
+            return str(_NE_ADM1), idx
+
+    # ── 3. ISO A2: "CA" ─────────────────────────────────────────────────────
+    if len(g) == 2 and g.isupper():
+        sf0 = _pyshp.Reader(str(_NE_ADM0))
+        idx = [i for i, r in enumerate(sf0.records())
+               if r.as_dict()['ISO_A2'] == g]
+        if idx:
+            return str(_NE_ADM0), idx
+
+    # ── 4. ISO A3: "CAN" ────────────────────────────────────────────────────
+    if len(g) == 3 and g.isupper():
+        sf0 = _pyshp.Reader(str(_NE_ADM0))
+        idx = [i for i, r in enumerate(sf0.records())
+               if r.as_dict()['ISO_A3'] == g]
+        if idx:
+            return str(_NE_ADM0), idx
+
+    # ── 5. Name lookup (case-insensitive) ────────────────────────────────────
+    gl = g.lower()
+
+    sf0 = _pyshp.Reader(str(_NE_ADM0))
+    idx = [i for i, r in enumerate(sf0.records())
+           if r.as_dict()['NAME'].lower() == gl]
+    if idx:
+        return str(_NE_ADM0), idx
+
+    sf1 = _pyshp.Reader(str(_NE_ADM1))
+    idx = [i for i, r in enumerate(sf1.records())
+           if r.as_dict()['name'].lower()    == gl
+           or r.as_dict()['name_en'].lower() == gl]
+    if idx:
+        return str(_NE_ADM1), idx
+
+    raise ValueError(
+        f"Geography not found: {geography!r}. "
+        f"Accepted formats: country name ('Canada'), "
+        f"'Country/Subdivision' ('Canada/Quebec'), "
+        f"ISO A2 ('CA'), ISO A3 ('CAN'), ISO 3166-2 ('CA-QC')."
+    )
+
+
+def sample_geography(
+        geography: str,
+        *,
+        point_density: float = 1e11,
+) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating], object]:
+    """Sample approximately equal-area points from a Natural Earth geography.
+
+    Looks up the requested country or subdivision in the bundled Natural Earth
+    50 m dataset and returns a Fibonacci lattice filtered to its interior, using
+    the same density convention as :func:`sample_region`.
+
+    Parameters
+    ----------
+    geography : str
+        The geography to sample.  Accepted formats (auto-detected):
+
+        - Country name: ``'Canada'`` (case-insensitive, matched against the
+          admin-0 ``NAME`` field; falls back to admin-1 ``name`` if no match).
+        - ``'Country/Subdivision'``: ``'Canada/Quebec'``, ``'United States of
+          America/Alaska'``.  Sub-national data is available only for
+          Australia, Brazil, Canada, China, India, Indonesia, Russia,
+          South Africa, and the United States of America.
+        - ISO 3166-1 alpha-2: ``'CA'``, ``'US'``
+        - ISO 3166-1 alpha-3: ``'CAN'``, ``'USA'``
+        - ISO 3166-2: ``'CA-QC'``, ``'US-AK'``
+    point_density : float, optional
+        Approximate area represented by each sample point (m²).
+        Defaults to 1×10¹¹ m² (~100 000 km² per point).
+
+    Returns
+    -------
+    lat : (M,) float64
+        Sample latitudes (rad).
+    lon : (M,) float64
+        Sample longitudes (rad).
+    geometry : shapely Polygon or MultiPolygon
+        Shapely geometry of the matched feature(s).
+
+    Raises
+    ------
+    ValueError
+        If ``geography`` does not match any feature, ``point_density`` is
+        non-positive, or no lattice points fall inside the geometry.
+
+    Examples
+    --------
+    ::
+
+        lat, lon, geom = sample_geography('Canada')
+        lat, lon, geom = sample_geography('Canada/Quebec')
+        lat, lon, geom = sample_geography('CA-QC')
+        lat, lon, geom = sample_geography('CAN')
+    """
+    if point_density <= 0:
+        raise ValueError(f"point_density must be positive, got {point_density}")
+
+    path, indices = _find_ne_indices(geography)
+    geom, crosses_am = _load_ne_features(path, indices)
+    lat, lon = _sample_from_geom(geom, crosses_am, point_density)
+    return lat, lon, geom

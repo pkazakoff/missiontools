@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 from missiontools.coverage import (sample_aoi, sample_region, sample_shapefile,
+                                   sample_geography,
                                    coverage_fraction, revisit_time, pointwise_coverage)
 
 # ---------------------------------------------------------------------------
@@ -682,3 +683,106 @@ class TestSampleShapefile:
         path = _make_shapefile(tmp_path, _BOX_10E)
         with pytest.raises(ValueError, match="point_density"):
             sample_shapefile(path, point_density=0)
+
+
+# ===========================================================================
+# sample_geography
+# ===========================================================================
+
+class TestSampleGeography:
+    """Tests use the bundled Natural Earth 50 m dataset."""
+
+    def test_returns_three_tuple(self):
+        lat, lon, geom = sample_geography('Canada')
+        assert isinstance(lat, np.ndarray)
+        assert isinstance(lon, np.ndarray)
+        assert lat.shape == lon.shape
+        assert lat.ndim == 1
+        assert geom is not None
+
+    def test_geometry_is_shapely_polygon(self):
+        import shapely
+        _, _, geom = sample_geography('Canada')
+        assert isinstance(geom, (shapely.geometry.Polygon,
+                                 shapely.geometry.MultiPolygon))
+
+    def test_lat_lon_in_radians(self):
+        lat, lon, _ = sample_geography('Canada')
+        assert np.all(lat >= -np.pi / 2) and np.all(lat <= np.pi / 2)
+        # lon may be extended past ±π for antimeridian crossers; Canada
+        # does not cross the AM so check standard range
+        assert np.all(lon >= -np.pi) and np.all(lon <= np.pi)
+
+    # ── Name lookup ──────────────────────────────────────────────────────────
+
+    def test_name_lookup_country(self):
+        lat, lon, geom = sample_geography('Canada')
+        assert len(lat) > 0
+
+    def test_name_lookup_case_insensitive(self):
+        lat1, _, _ = sample_geography('Canada')
+        lat2, _, _ = sample_geography('canada')
+        assert len(lat1) == len(lat2)
+
+    # ── ISO A2 ───────────────────────────────────────────────────────────────
+
+    def test_iso_a2_same_feature_count_as_name(self):
+        lat_name, _, _ = sample_geography('Canada')
+        lat_iso,  _, _ = sample_geography('CA')
+        # Same feature → same point count (density-based, so equal)
+        assert len(lat_name) == len(lat_iso)
+
+    # ── ISO A3 ───────────────────────────────────────────────────────────────
+
+    def test_iso_a3_same_as_iso_a2(self):
+        lat_a2, _, _ = sample_geography('CA')
+        lat_a3, _, _ = sample_geography('CAN')
+        assert len(lat_a2) == len(lat_a3)
+
+    # ── Slash pattern ────────────────────────────────────────────────────────
+
+    def test_slash_pattern_nonempty(self):
+        lat_qc, lon_qc, _ = sample_geography('Canada/Quebec')
+        assert len(lat_qc) > 0
+
+    def test_slash_pattern_points_in_quebec_bbox(self):
+        lat, lon, _ = sample_geography('Canada/Quebec')
+        lat_deg = np.degrees(lat)
+        lon_deg = np.degrees(lon)
+        # Quebec rough bounding box
+        assert np.all(lat_deg >= 44.0) and np.all(lat_deg <= 63.0)
+        assert np.all(lon_deg >= -80.0) and np.all(lon_deg <= -56.0)
+
+    def test_slash_pattern_case_insensitive(self):
+        lat1, _, _ = sample_geography('Canada/Quebec')
+        lat2, _, _ = sample_geography('canada/quebec')
+        assert len(lat1) == len(lat2)
+
+    # ── ISO 3166-2 ───────────────────────────────────────────────────────────
+
+    def test_iso_3166_2_same_as_slash(self):
+        lat_slash, _, _ = sample_geography('Canada/Quebec')
+        lat_iso,   _, _ = sample_geography('CA-QC')
+        assert len(lat_slash) == len(lat_iso)
+
+    # ── Error handling ───────────────────────────────────────────────────────
+
+    def test_unknown_geography_raises(self):
+        with pytest.raises(ValueError, match="Geography not found"):
+            sample_geography('Narnia')
+
+    def test_invalid_subdivision_raises(self):
+        with pytest.raises(ValueError):
+            sample_geography('Canada/Narnia')
+
+    def test_nonpositive_density_raises(self):
+        with pytest.raises(ValueError, match="point_density"):
+            sample_geography('Canada', point_density=0)
+
+    # ── Regression guard: sample_shapefile refactor unchanged ────────────────
+
+    def test_sample_shapefile_still_works(self, tmp_path):
+        path = _make_shapefile(tmp_path, _BOX_10E)
+        lat, lon = sample_shapefile(path, point_density=5e12)
+        assert len(lat) > 0
+        assert lat.shape == lon.shape
