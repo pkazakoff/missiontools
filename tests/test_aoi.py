@@ -199,3 +199,44 @@ class TestAoIFromShapefile:
         path = _make_shapefile(tmp_path, _BOX_10E)
         aoi = AoI.from_shapefile(path, point_density=5e12)
         assert 'shapefile' in repr(aoi)
+
+
+# ---------------------------------------------------------------------------
+# TestAoIFromGeography
+# ---------------------------------------------------------------------------
+
+class TestAoIFromGeography:
+
+    def test_returns_aoi(self):
+        aoi = AoI.from_geography('Canada')
+        assert isinstance(aoi, AoI)
+
+    def test_nonempty(self):
+        aoi = AoI.from_geography('Canada')
+        assert len(aoi) > 0
+
+    def test_geometry_set(self):
+        aoi = AoI.from_geography('Canada')
+        assert aoi.geometry is not None
+
+    def test_shapefile_path_none(self):
+        aoi = AoI.from_geography('Canada')
+        assert aoi.shapefile_path is None
+
+    def test_lat_lon_degrees(self):
+        aoi = AoI.from_geography('Canada')
+        assert np.all(aoi.lat >= -90.0) and np.all(aoi.lat <= 90.0)
+        assert np.all(aoi.lon >= -180.0) and np.all(aoi.lon <= 180.0)
+
+    def test_iso_a2(self):
+        aoi = AoI.from_geography('CA')
+        assert len(aoi) > 0
+
+    def test_subdivision(self):
+        aoi = AoI.from_geography('Canada/Quebec')
+        assert len(aoi) > 0
+
+    def test_unknown_raises(self):
+        import pytest
+        with pytest.raises(ValueError):
+            AoI.from_geography('Narnia')

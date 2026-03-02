@@ -176,3 +176,41 @@ class AoI:
         obj._geometry = geom
         obj._shapefile_path = str(path)
         return obj
+
+    @classmethod
+    def from_geography(
+            cls,
+            geography: str,
+            *,
+            point_density: float = 1e11,
+    ) -> 'AoI':
+        """Sample an AoI from a Natural Earth geography by name or code.
+
+        Delegates to :func:`~missiontools.coverage.sample_geography`.
+
+        Parameters
+        ----------
+        geography : str
+            One of:
+
+            - Country name: ``'Canada'`` (case-insensitive)
+            - ``'Country/Subdivision'``: ``'Canada/Quebec'``
+            - ISO 3166-1 alpha-2: ``'CA'``
+            - ISO 3166-1 alpha-3: ``'CAN'``
+            - ISO 3166-2: ``'CA-QC'``
+        point_density : float, optional
+            Approximate area per sample point (m²).  Defaults to 1×10¹¹ m².
+
+        Returns
+        -------
+        AoI
+            With :attr:`geometry` populated.
+        """
+        from .coverage import sample_geography
+
+        lat_rad, lon_rad, geom = sample_geography(
+            geography, point_density=point_density,
+        )
+        obj = cls(np.degrees(lat_rad), np.degrees(lon_rad))
+        obj._geometry = geom
+        return obj
