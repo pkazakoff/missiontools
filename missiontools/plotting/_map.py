@@ -93,9 +93,11 @@ def _set_extent(ax, lat, lon, factor: float = 1.5) -> None:
     pad_x = (factor - 1) / 2 * max(x_max - x_min, 1.0)
     pad_y = (factor - 1) / 2 * max(y_max - y_min, 1.0)
 
-    # set_extent clamps to the projection's defined valid area and silently
-    # ignores padding that would extend beyond it.  set_xlim/set_ylim sets
-    # the matplotlib viewLim directly in projected coordinates and has no
-    # such clamping, so it correctly shows space outside the data on all sides.
-    ax.set_xlim(x_min - pad_x, x_max + pad_x)
-    ax.set_ylim(y_min - pad_y, y_max + pad_y)
+    # Clamp to the projection's renderable limits.  Cartopy draws nothing
+    # (no coastlines, gridlines, or features) outside these bounds, so any
+    # viewport that extends beyond them only adds blank white space.
+    x_lo, x_hi = ax.projection.x_limits
+    y_lo, y_hi = ax.projection.y_limits
+
+    ax.set_xlim(max(x_min - pad_x, x_lo), min(x_max + pad_x, x_hi))
+    ax.set_ylim(max(y_min - pad_y, y_lo), min(y_max + pad_y, y_hi))

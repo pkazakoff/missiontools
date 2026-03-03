@@ -175,11 +175,12 @@ class TestSetExtent:
         assert ax.ylim[0] <= y[valid].min()
         assert ax.ylim[1] >= y[valid].max()
 
-    def test_no_clamping_for_epsg3347(self):
-        """set_xlim/set_ylim must not clamp to the projection's valid domain.
+    def test_clamped_to_projection_limits(self):
+        """Padding must not extend beyond the projection's renderable area.
 
-        Cartopy's set_extent silently clips y_min to ~1.87e6 m for EPSG:3347;
-        set_xlim/set_ylim bypasses that and correctly extends below the data.
+        EPSG:3347 has restrictive y_limits that don't cover all of Canada.
+        _set_extent should clamp to those limits rather than creating blank
+        viewport space where Cartopy draws nothing.
         """
         import cartopy.crs as ccrs
         from missiontools import AoI
@@ -190,13 +191,9 @@ class TestSetExtent:
         ax   = self._mock_ax(projection=proj)
         _set_extent(ax, aoi.lat, aoi.lon, factor=1.5)
 
-        # With correct padding the ylim lower bound must be BELOW the
-        # sample-point minimum (~706 843 m).  The old set_extent clamped at
-        # ~1 869 908 m which was ABOVE the data minimum, leaving no margin.
-        pts = proj.transform_points(ccrs.PlateCarree(), aoi.lon, aoi.lat)
-        y = pts[:, 1]
-        y_data_min = float(y[np.isfinite(y)].min())
-        assert ax.ylim[0] < y_data_min
+        y_lo, y_hi = proj.y_limits
+        assert ax.ylim[0] >= y_lo
+        assert ax.ylim[1] <= y_hi
 
     def test_minimum_range_guard(self):
         """A single-point AoI still produces a non-zero window."""
