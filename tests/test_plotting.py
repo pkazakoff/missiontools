@@ -113,81 +113,97 @@ class TestSplitAntimeridian:
 
 
 # ===========================================================================
-# TestSetExtent — pure, mocks ax.set_extent
+# Cartopy-dependent tests
 # ===========================================================================
 
+cartopy = pytest.importorskip('cartopy')
+
+
 class TestSetExtent:
+    """_set_extent computes the bounding box in projected coordinates."""
 
-    def _mock_ax(self):
+    def _mock_ax(self, projection=None):
         """Return a mock GeoAxes that records set_extent calls."""
-        class MockAx:
-            def __init__(self):
-                self.extent_calls = []
-            def set_extent(self, extent, crs=None):
-                self.extent_calls.append(extent)
-        return MockAx()
-
-    def test_padding_symmetric(self, monkeypatch):
-        from missiontools.plotting import _map as map_mod
         import cartopy.crs as ccrs
 
-        monkeypatch.setattr(map_mod, '_try_cartopy', lambda: (ccrs, None))
+        class MockAx:
+            def __init__(self, proj):
+                self.projection   = proj
+                self.extent_calls = []
+                self.crs_calls    = []
 
+            def set_extent(self, extent, crs=None):
+                self.extent_calls.append(extent)
+                self.crs_calls.append(crs)
+
+        return MockAx(projection or ccrs.PlateCarree())
+
+    def test_padding_symmetric_platecarree(self):
+        """For PlateCarree, projected coords == lon/lat so padding is in degrees."""
         from missiontools.plotting._map import _set_extent
-        ax = self._mock_ax()
+
+        ax  = self._mock_ax()
         lat = np.array([-10., 10.])
         lon = np.array([-20., 20.])
         _set_extent(ax, lat, lon, factor=1.5)
 
         assert len(ax.extent_calls) == 1
         ext = ax.extent_calls[0]
-        # lon range=40°, pad=0.25*40=10; lat range=20°, pad=0.25*20=5
-        assert np.isclose(ext[0], -30.0)  # lon_min - pad
-        assert np.isclose(ext[1],  30.0)  # lon_max + pad
-        assert np.isclose(ext[2], -15.0)  # lat_min - pad
-        assert np.isclose(ext[3],  15.0)  # lat_max + pad
+        # lon range=40°, pad=0.25×40=10; lat range=20°, pad=0.25×20=5
+        assert np.isclose(ext[0], -30.0, atol=1e-6)
+        assert np.isclose(ext[1],  30.0, atol=1e-6)
+        assert np.isclose(ext[2], -15.0, atol=1e-6)
+        assert np.isclose(ext[3],  15.0, atol=1e-6)
 
-    def test_clamped_to_earth_bounds(self, monkeypatch):
-        from missiontools.plotting import _map as map_mod
+    def test_extent_crs_matches_projection(self):
+        """set_extent is called with the axes' own projection, not PlateCarree."""
         import cartopy.crs as ccrs
-
-        monkeypatch.setattr(map_mod, '_try_cartopy', lambda: (ccrs, None))
-
         from missiontools.plotting._map import _set_extent
-        ax = self._mock_ax()
-        lat = np.array([-85., 85.])
-        lon = np.array([-175., 175.])
+
+        proj = ccrs.LambertConformal()
+        ax   = self._mock_ax(projection=proj)
+        lat  = np.linspace(42, 83, 20)
+        lon  = np.linspace(-141, -52, 20)
+        _set_extent(ax, lat, lon, factor=1.5)
+
+        assert ax.crs_calls[0] is proj
+
+    def test_padding_symmetric_projected(self):
+        """Padding is symmetric in projected (metre) units for a conic projection."""
+        import cartopy.crs as ccrs
+        from missiontools.plotting._map import _set_extent
+
+        proj = ccrs.LambertConformal(central_longitude=-96)
+        ax   = self._mock_ax(projection=proj)
+        lat  = np.linspace(42, 83, 30)
+        lon  = np.linspace(-141, -52, 30)
         _set_extent(ax, lat, lon, factor=1.5)
 
         ext = ax.extent_calls[0]
-        assert ext[0] >= -180.0
-        assert ext[1] <=  180.0
-        assert ext[2] >=  -90.0
-        assert ext[3] <=   90.0
+        # Transform the same points to verify the extent is sensible
+        pts = proj.transform_points(ccrs.PlateCarree(), lon, lat)
+        x, y = pts[:, 0], pts[:, 1]
+        valid = np.isfinite(x) & np.isfinite(y)
+        x_min, x_max = x[valid].min(), x[valid].max()
+        y_min, y_max = y[valid].min(), y[valid].max()
+        # The extent must contain all data points
+        assert ext[0] <= x_min
+        assert ext[1] >= x_max
+        assert ext[2] <= y_min
+        assert ext[3] >= y_max
 
-    def test_minimum_one_degree_range(self, monkeypatch):
-        """A single-point AoI still gets a non-zero window."""
-        from missiontools.plotting import _map as map_mod
-        import cartopy.crs as ccrs
-
-        monkeypatch.setattr(map_mod, '_try_cartopy', lambda: (ccrs, None))
-
+    def test_minimum_range_guard(self):
+        """A single-point AoI still produces a non-zero window."""
         from missiontools.plotting._map import _set_extent
-        ax = self._mock_ax()
-        lat = np.array([0., 0.])   # zero range
-        lon = np.array([0., 0.])
+
+        ax  = self._mock_ax()
+        lat = np.array([45., 45.])
+        lon = np.array([0.,  0.])
         _set_extent(ax, lat, lon, factor=1.5)
 
         ext = ax.extent_calls[0]
-        assert ext[1] - ext[0] > 0   # non-zero lon extent
-        assert ext[3] - ext[2] > 0   # non-zero lat extent
-
-
-# ===========================================================================
-# Cartopy-dependent tests
-# ===========================================================================
-
-cartopy = pytest.importorskip('cartopy')
+        assert ext[1] - ext[0] > 0
+        assert ext[3] - ext[2] > 0
 
 
 class TestPlotGroundTrack:

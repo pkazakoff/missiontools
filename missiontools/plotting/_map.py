@@ -56,10 +56,13 @@ def _new_map_ax(ax=None, projection=None):
 
 
 def _set_extent(ax, lat, lon, factor: float = 1.5) -> None:
-    """Auto-window the axes to *factor* × the data lat/lon bounding box.
+    """Auto-window the axes to *factor* × the data bounding box.
 
-    Pads each axis by ``(factor - 1) / 2 × range``, then clamps to valid
-    Earth bounds and calls ``ax.set_extent``.
+    The bounding box is computed in the axes' native projected coordinate
+    system, so padding is symmetric in projected units (metres for conic /
+    cylindrical projections, degrees for PlateCarree).  This ensures the
+    window is not artificially clipped or skewed for non-equirectangular
+    projections.
 
     Parameters
     ----------
@@ -71,17 +74,26 @@ def _set_extent(ax, lat, lon, factor: float = 1.5) -> None:
     """
     ccrs, _ = _try_cartopy()
 
-    lat_min, lat_max = float(lat.min()), float(lat.max())
-    lon_min, lon_max = float(lon.min()), float(lon.max())
+    # Project the scattered points into the axes' native CRS
+    proj = ax.projection
+    pts  = proj.transform_points(
+        ccrs.PlateCarree(),
+        np.asarray(lon, dtype=float),
+        np.asarray(lat, dtype=float),
+    )
+    x, y = pts[:, 0], pts[:, 1]
 
-    # Ensure at least 1° of range in each axis before padding
-    pad_lat = (factor - 1) / 2 * max(lat_max - lat_min, 1.0)
-    pad_lon = (factor - 1) / 2 * max(lon_max - lon_min, 1.0)
+    # Discard any points that fell outside the projection's valid domain
+    valid = np.isfinite(x) & np.isfinite(y)
+    x, y  = x[valid], y[valid]
 
-    extent = [
-        max(lon_min - pad_lon, -180.0),
-        min(lon_max + pad_lon,  180.0),
-        max(lat_min - pad_lat,  -90.0),
-        min(lat_max + pad_lat,   90.0),
-    ]
-    ax.set_extent(extent, crs=ccrs.PlateCarree())
+    x_min, x_max = float(x.min()), float(x.max())
+    y_min, y_max = float(y.min()), float(y.max())
+
+    pad_x = (factor - 1) / 2 * max(x_max - x_min, 1.0)
+    pad_y = (factor - 1) / 2 * max(y_max - y_min, 1.0)
+
+    ax.set_extent(
+        [x_min - pad_x, x_max + pad_x, y_min - pad_y, y_max + pad_y],
+        crs=proj,
+    )
