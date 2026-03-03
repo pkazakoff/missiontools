@@ -123,18 +123,20 @@ class TestSetExtent:
     """_set_extent computes the bounding box in projected coordinates."""
 
     def _mock_ax(self, projection=None):
-        """Return a mock GeoAxes that records set_extent calls."""
+        """Return a mock GeoAxes that records set_xlim / set_ylim calls."""
         import cartopy.crs as ccrs
 
         class MockAx:
             def __init__(self, proj):
-                self.projection   = proj
-                self.extent_calls = []
-                self.crs_calls    = []
+                self.projection = proj
+                self.xlim = None
+                self.ylim = None
 
-            def set_extent(self, extent, crs=None):
-                self.extent_calls.append(extent)
-                self.crs_calls.append(crs)
+            def set_xlim(self, x0, x1):
+                self.xlim = (x0, x1)
+
+            def set_ylim(self, y0, y1):
+                self.ylim = (y0, y1)
 
         return MockAx(projection or ccrs.PlateCarree())
 
@@ -147,29 +149,14 @@ class TestSetExtent:
         lon = np.array([-20., 20.])
         _set_extent(ax, lat, lon, factor=1.5)
 
-        assert len(ax.extent_calls) == 1
-        ext = ax.extent_calls[0]
         # lon range=40°, pad=0.25×40=10; lat range=20°, pad=0.25×20=5
-        assert np.isclose(ext[0], -30.0, atol=1e-6)
-        assert np.isclose(ext[1],  30.0, atol=1e-6)
-        assert np.isclose(ext[2], -15.0, atol=1e-6)
-        assert np.isclose(ext[3],  15.0, atol=1e-6)
+        assert np.isclose(ax.xlim[0], -30.0, atol=1e-6)
+        assert np.isclose(ax.xlim[1],  30.0, atol=1e-6)
+        assert np.isclose(ax.ylim[0], -15.0, atol=1e-6)
+        assert np.isclose(ax.ylim[1],  15.0, atol=1e-6)
 
-    def test_extent_crs_matches_projection(self):
-        """set_extent is called with the axes' own projection, not PlateCarree."""
-        import cartopy.crs as ccrs
-        from missiontools.plotting._map import _set_extent
-
-        proj = ccrs.LambertConformal()
-        ax   = self._mock_ax(projection=proj)
-        lat  = np.linspace(42, 83, 20)
-        lon  = np.linspace(-141, -52, 20)
-        _set_extent(ax, lat, lon, factor=1.5)
-
-        assert ax.crs_calls[0] is proj
-
-    def test_padding_symmetric_projected(self):
-        """Padding is symmetric in projected (metre) units for a conic projection."""
+    def test_padding_contains_data_projected(self):
+        """Padding in projected space contains all data for a conic projection."""
         import cartopy.crs as ccrs
         from missiontools.plotting._map import _set_extent
 
@@ -179,18 +166,37 @@ class TestSetExtent:
         lon  = np.linspace(-141, -52, 30)
         _set_extent(ax, lat, lon, factor=1.5)
 
-        ext = ax.extent_calls[0]
-        # Transform the same points to verify the extent is sensible
+        # Transform the same points to verify the viewport contains them all
         pts = proj.transform_points(ccrs.PlateCarree(), lon, lat)
         x, y = pts[:, 0], pts[:, 1]
         valid = np.isfinite(x) & np.isfinite(y)
-        x_min, x_max = x[valid].min(), x[valid].max()
-        y_min, y_max = y[valid].min(), y[valid].max()
-        # The extent must contain all data points
-        assert ext[0] <= x_min
-        assert ext[1] >= x_max
-        assert ext[2] <= y_min
-        assert ext[3] >= y_max
+        assert ax.xlim[0] <= x[valid].min()
+        assert ax.xlim[1] >= x[valid].max()
+        assert ax.ylim[0] <= y[valid].min()
+        assert ax.ylim[1] >= y[valid].max()
+
+    def test_no_clamping_for_epsg3347(self):
+        """set_xlim/set_ylim must not clamp to the projection's valid domain.
+
+        Cartopy's set_extent silently clips y_min to ~1.87e6 m for EPSG:3347;
+        set_xlim/set_ylim bypasses that and correctly extends below the data.
+        """
+        import cartopy.crs as ccrs
+        from missiontools import AoI
+        from missiontools.plotting._map import _set_extent
+
+        aoi  = AoI.from_geography('Canada', point_density=20_000e6)
+        proj = ccrs.epsg(3347)
+        ax   = self._mock_ax(projection=proj)
+        _set_extent(ax, aoi.lat, aoi.lon, factor=1.5)
+
+        # With correct padding the ylim lower bound must be BELOW the
+        # sample-point minimum (~706 843 m).  The old set_extent clamped at
+        # ~1 869 908 m which was ABOVE the data minimum, leaving no margin.
+        pts = proj.transform_points(ccrs.PlateCarree(), aoi.lon, aoi.lat)
+        y = pts[:, 1]
+        y_data_min = float(y[np.isfinite(y)].min())
+        assert ax.ylim[0] < y_data_min
 
     def test_minimum_range_guard(self):
         """A single-point AoI still produces a non-zero window."""
@@ -201,9 +207,8 @@ class TestSetExtent:
         lon = np.array([0.,  0.])
         _set_extent(ax, lat, lon, factor=1.5)
 
-        ext = ax.extent_calls[0]
-        assert ext[1] - ext[0] > 0
-        assert ext[3] - ext[2] > 0
+        assert ax.xlim[1] - ax.xlim[0] > 0
+        assert ax.ylim[1] - ax.ylim[0] > 0
 
 
 class TestPlotGroundTrack:
