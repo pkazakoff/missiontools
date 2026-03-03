@@ -72,14 +72,13 @@ class TestCoverageConstruct:
         with pytest.raises(TypeError, match='Sensor'):
             Coverage(_aoi(), ['not_a_sensor'])
 
-    def test_multiple_sensors_raises(self):
+    def test_multiple_sensors_same_spacecraft_accepted(self):
         sc = _sc()
         s1 = Sensor(10.0, body_vector=[0, 0, 1])
         s2 = Sensor(10.0, body_vector=[0, 1, 0])
         sc.add_sensor(s1)
         sc.add_sensor(s2)
-        with pytest.raises(NotImplementedError, match='Multiple'):
-            Coverage(_aoi(), [s1, s2])
+        Coverage(_aoi(), [s1, s2])   # must not raise
 
     def test_unattached_sensor_raises(self):
         s = _sensor()   # not attached to any spacecraft
@@ -243,3 +242,92 @@ class TestCoverageConstraints:
         np.testing.assert_allclose(
             r_body['final_cumulative'], r_ind['final_cumulative'], atol=1e-6,
         )
+
+
+# ===========================================================================
+# Multi-sensor and constellation support
+# ===========================================================================
+
+class TestCoverageMultiSensor:
+    """Verify that Coverage accepts multiple sensors and returns combined results."""
+
+    def _make_sc(self, raan_deg: float = 0.0):
+        return Spacecraft(
+            a=6_771_000., e=0., i=np.radians(51.6),
+            raan=np.radians(raan_deg), arg_p=0., ma=0., epoch=_EPOCH,
+        )
+
+    def _make_attached(self, raan_deg: float = 0.0):
+        sc = self._make_sc(raan_deg)
+        s  = Sensor(30.0, body_vector=[0, 0, 1])
+        sc.add_sensor(s)
+        return s
+
+    def test_sensors_property_multi(self):
+        s1 = self._make_attached(0.)
+        s2 = self._make_attached(90.)
+        cov = Coverage(_aoi(), [s1, s2])
+        assert len(cov.sensors) == 2
+        assert cov.sensors[0] is s1
+        assert cov.sensors[1] is s2
+
+    def test_two_sensors_same_spacecraft_coverage_fraction(self):
+        """Two sensors on the same satellite (different FOV axes) should not
+        crash and return a valid cumulative coverage fraction."""
+        sc = self._make_sc()
+        s1 = Sensor(30.0, body_vector=[0, 0, 1])
+        s2 = Sensor(30.0, body_vector=[0, 1, 0])
+        sc.add_sensor(s1)
+        sc.add_sensor(s2)
+        cov = Coverage(_aoi(), [s1, s2])
+        result = cov.coverage_fraction(_EPOCH, _T_END, max_step=_STEP)
+        assert 0.0 <= result['final_cumulative'] <= 1.0
+
+    def test_constellation_coverage_ge_single(self):
+        """A two-satellite constellation should cover at least as much as a
+        single satellite over the same period."""
+        s1 = self._make_attached(0.)
+        s2 = self._make_attached(90.)
+        aoi = _aoi()
+
+        cov_single = Coverage(aoi, [s1])
+        cov_const  = Coverage(aoi, [s1, s2])
+
+        r_single = cov_single.coverage_fraction(_EPOCH, _T_END, max_step=_STEP)
+        r_const  = cov_const.coverage_fraction(_EPOCH, _T_END, max_step=_STEP)
+
+        assert r_const['final_cumulative'] >= r_single['final_cumulative'] - 1e-9
+
+    def test_constellation_access_pointwise_list_length(self):
+        """access_pointwise returns one list per AoI ground point."""
+        s1  = self._make_attached(0.)
+        s2  = self._make_attached(90.)
+        aoi = _aoi()
+        cov = Coverage(aoi, [s1, s2])
+        result = cov.access_pointwise(_EPOCH, _T_END, max_step=_STEP)
+        assert isinstance(result, list)
+        assert len(result) == len(aoi)
+
+    def test_constellation_revisit_pointwise_list_length(self):
+        """revisit_pointwise returns one array per AoI ground point."""
+        s1  = self._make_attached(0.)
+        s2  = self._make_attached(90.)
+        aoi = _aoi()
+        cov = Coverage(aoi, [s1, s2])
+        result = cov.revisit_pointwise(_EPOCH, _T_END, max_step=_STEP)
+        assert isinstance(result, list)
+        assert len(result) == len(aoi)
+        for item in result:
+            assert isinstance(item, np.ndarray)
+
+    def test_constellation_pointwise_coverage_shape(self):
+        """pointwise_coverage returns (N, M) visible matrix for constellation."""
+        s1  = self._make_attached(0.)
+        s2  = self._make_attached(90.)
+        aoi = _aoi()
+        cov = Coverage(aoi, [s1, s2])
+        result = cov.pointwise_coverage(_EPOCH, _T_END, max_step=_STEP)
+        N = len(result['t'])
+        M = len(aoi)
+        assert result['visible'].shape == (N, M)
+        assert result['visible'].dtype == bool

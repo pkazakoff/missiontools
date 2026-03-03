@@ -83,6 +83,71 @@ def _parse_constraints(
     return use_fov, pointing_lvlh_norm, cos_fov, use_sza, cos_sza_max_, cos_sza_min_
 
 
+def _make_sensor_spec(
+        keplerian_params:  dict,
+        propagator_type:   str,
+        fov_pointing_lvlh: npt.NDArray | None,
+        fov_half_angle:    float | None,
+) -> tuple:
+    """Convert per-sensor params into a compact spec tuple.
+
+    Returns ``(keplerian_params, propagator_type, use_fov, pointing_lvlh_norm, cos_fov)``.
+    """
+    _fov_given = (fov_pointing_lvlh is not None, fov_half_angle is not None)
+    if any(_fov_given) and not all(_fov_given):
+        raise ValueError("fov_pointing_lvlh and fov_half_angle must both be "
+                         "provided together")
+    if fov_pointing_lvlh is not None and fov_half_angle is not None:
+        pointing_norm = (np.asarray(fov_pointing_lvlh, dtype=np.float64)
+                         / np.linalg.norm(fov_pointing_lvlh))
+        cos_fov = float(np.cos(fov_half_angle))
+        use_fov = True
+    else:
+        pointing_norm = None
+        cos_fov       = None
+        use_fov       = False
+    return (keplerian_params, propagator_type, use_fov, pointing_norm, cos_fov)
+
+
+def _compute_vis_batch_multi(
+        t_batch:       npt.NDArray,
+        sensor_specs:  list,
+        gs_ecef:       npt.NDArray,
+        up:            npt.NDArray,
+        sin_el_min:    float,
+        use_sza:       bool,
+        cos_sza_max_:  float | None,
+        cos_sza_min_:  float | None,
+) -> npt.NDArray[np.bool_]:              # (T, M)
+    """Combined visibility for multiple sensors (union of FOVs).
+
+    For each sensor spec, propagates its spacecraft and computes elevation + FOV
+    visibility.  The per-sensor results are OR-reduced; then the global SZA
+    constraint (if any) is applied once to the union.
+    """
+    T = len(t_batch)
+    M = gs_ecef.shape[0]
+    vis = np.zeros((T, M), dtype=np.bool_)
+
+    for kp, prop_type, use_fov, pointing_norm, cos_fov in sensor_specs:
+        r, v    = propagate_analytical(t_batch, **kp, type=prop_type)
+        pt_ecef = (_pointing_ecef(pointing_norm, r, v, t_batch)
+                   if use_fov else None)
+        vis |= _visibility(r, t_batch, gs_ecef, up, sin_el_min,
+                           pointing_ecef=pt_ecef,
+                           cos_fov=cos_fov if use_fov else None)
+
+    if use_sza:
+        sun_e   = _sun_ecef(t_batch)
+        cos_sza = np.einsum('ti,mi->tm', sun_e, up)
+        if cos_sza_max_ is not None:
+            vis &= cos_sza >= cos_sza_max_
+        if cos_sza_min_ is not None:
+            vis &= cos_sza <= cos_sza_min_
+
+    return vis
+
+
 def _compute_vis_batch(
         t_batch,
         keplerian_params:  dict,
@@ -97,18 +162,10 @@ def _compute_vis_batch(
         cos_sza_max_:      float | None,
         cos_sza_min_:      float | None,
 ) -> npt.NDArray[np.bool_]:              # (T, M)
-    """Propagate one batch and return the visibility matrix."""
-    r, v    = propagate_analytical(t_batch, **keplerian_params,
-                                   type=propagator_type)
-    pt_ecef = (_pointing_ecef(pointing_lvlh_norm, r, v, t_batch)
-               if use_fov else None)
-    sun_e   = _sun_ecef(t_batch) if use_sza else None
-    return _visibility(r, t_batch, gs_ecef, up, sin_el_min,
-                       pointing_ecef=pt_ecef,
-                       cos_fov=cos_fov if use_fov else None,
-                       sun_ecef=sun_e,
-                       cos_sza_max=cos_sza_max_,
-                       cos_sza_min=cos_sza_min_)
+    """Propagate one batch and return the visibility matrix (single sensor)."""
+    spec = (keplerian_params, propagator_type, use_fov, pointing_lvlh_norm, cos_fov)
+    return _compute_vis_batch_multi(t_batch, [spec], gs_ecef, up, sin_el_min,
+                                    use_sza, cos_sza_max_, cos_sza_min_)
 
 
 def _pointing_ecef(pointing_lvlh: npt.NDArray,   # (3,) unit vector in LVLH
@@ -199,23 +256,25 @@ def _detect_transitions(
     return [(all_t[k], int(all_m[k]), bool(all_r[k])) for k in order]
 
 
-def _collect_access_intervals(
-        lat:               npt.NDArray,
-        lon:               npt.NDArray,
-        keplerian_params:  dict,
-        t_start:           np.datetime64,
-        t_end:             np.datetime64,
-        alt:               float,
-        el_min:            float,
-        propagator_type:   str,
-        max_step:          np.timedelta64,
-        batch_size:        int,
-        fov_pointing_lvlh, fov_half_angle,
-        sza_max,           sza_min,
+def _collect_access_intervals_multi(
+        lat:          npt.NDArray,
+        lon:          npt.NDArray,
+        sensor_specs: list,
+        t_start:      np.datetime64,
+        t_end:        np.datetime64,
+        alt:          float,
+        el_min:       float,
+        sza_max,
+        sza_min,
+        max_step:     np.timedelta64,
+        batch_size:   int,
         *,
-        close_at_end:      bool,
+        close_at_end: bool,
 ) -> list[list[tuple[np.datetime64, np.datetime64]]]:
-    """Collect per-point ``(AOS, LOS)`` ``datetime64[us]`` interval pairs.
+    """Collect per-point ``(AOS, LOS)`` intervals for multiple sensors.
+
+    Visibility at each timestep is the union of all sensor FOVs; SZA is
+    applied globally after the union.
 
     Parameters
     ----------
@@ -223,8 +282,9 @@ def _collect_access_intervals(
         If ``True``, any interval still open at ``t_end`` is closed with
         ``t_end``.  If ``False``, open-ended intervals are discarded.
     """
-    use_fov, pointing_lvlh_norm, cos_fov, use_sza, cos_sza_max_, cos_sza_min_ = \
-        _parse_constraints(fov_pointing_lvlh, fov_half_angle, sza_max, sza_min)
+    use_sza      = sza_max is not None or sza_min is not None
+    cos_sza_max_ = float(np.cos(sza_max)) if sza_max is not None else None
+    cos_sza_min_ = float(np.cos(sza_min)) if sza_min is not None else None
 
     lat = np.asarray(lat, dtype=np.float64)
     lon = np.asarray(lon, dtype=np.float64)
@@ -250,10 +310,9 @@ def _collect_access_intervals(
     for b0 in range(0, N, batch_size):
         b1      = min(b0 + batch_size, N)
         t_batch = t_out[b0:b1]
-        vis     = _compute_vis_batch(t_batch, keplerian_params, propagator_type,
-                                     gs_ecef, up, sin_el_min,
-                                     use_fov, pointing_lvlh_norm, cos_fov,
-                                     use_sza, cos_sza_max_, cos_sza_min_)
+        vis     = _compute_vis_batch_multi(t_batch, sensor_specs,
+                                           gs_ecef, up, sin_el_min,
+                                           use_sza, cos_sza_max_, cos_sza_min_)
 
         for t_evt, m, is_rising in _detect_transitions(vis, in_access, t_batch):
             if is_rising:
@@ -272,6 +331,163 @@ def _collect_access_intervals(
                 intervals[m].append((current_aos[m], t_end_dt))
 
     return intervals
+
+
+def _collect_access_intervals(
+        lat:               npt.NDArray,
+        lon:               npt.NDArray,
+        keplerian_params:  dict,
+        t_start:           np.datetime64,
+        t_end:             np.datetime64,
+        alt:               float,
+        el_min:            float,
+        propagator_type:   str,
+        max_step:          np.timedelta64,
+        batch_size:        int,
+        fov_pointing_lvlh, fov_half_angle,
+        sza_max,           sza_min,
+        *,
+        close_at_end:      bool,
+) -> list[list[tuple[np.datetime64, np.datetime64]]]:
+    """Collect per-point ``(AOS, LOS)`` ``datetime64[us]`` interval pairs (single sensor).
+
+    Delegates to :func:`_collect_access_intervals_multi` with a one-element
+    sensor spec list.
+    """
+    spec = _make_sensor_spec(keplerian_params, propagator_type,
+                             fov_pointing_lvlh, fov_half_angle)
+    return _collect_access_intervals_multi(
+        lat, lon, [spec], t_start, t_end, alt, el_min,
+        sza_max, sza_min, max_step, batch_size, close_at_end=close_at_end,
+    )
+
+
+def _coverage_fraction_multi(
+        lat:          npt.NDArray,
+        lon:          npt.NDArray,
+        sensor_specs: list,
+        t_start:      np.datetime64,
+        t_end:        np.datetime64,
+        alt:          float,
+        el_min:       float,
+        sza_max,
+        sza_min,
+        max_step:     np.timedelta64,
+        batch_size:   int,
+) -> dict:
+    """Multi-sensor implementation of :func:`coverage_fraction`."""
+    use_sza      = sza_max is not None or sza_min is not None
+    cos_sza_max_ = float(np.cos(sza_max)) if sza_max is not None else None
+    cos_sza_min_ = float(np.cos(sza_min)) if sza_min is not None else None
+
+    lat = np.asarray(lat, dtype=np.float64)
+    lon = np.asarray(lon, dtype=np.float64)
+    M   = len(lat)
+    if M == 0:
+        raise ValueError("lat/lon arrays must not be empty")
+
+    gs_ecef, up = _build_gs(lat, lon, alt)
+    sin_el_min  = float(np.sin(el_min))
+
+    offs, t_start_us = _make_offsets(t_start, t_end, max_step)
+    N = len(offs)
+    if N == 0:
+        empty = np.array([], dtype=np.float32)
+        return {
+            't': np.array([], dtype='datetime64[us]'),
+            'fraction': empty, 'cumulative': empty,
+            'mean_fraction': float('nan'), 'final_cumulative': float('nan'),
+        }
+
+    t_out    = t_start_us + offs.astype('timedelta64[us]')
+    frac_out = np.empty(N, dtype=np.float32)
+    cum_out  = np.empty(N, dtype=np.float32)
+
+    ever_covered = np.zeros(M, dtype=np.bool_)
+    n_covered    = 0
+
+    for b0 in range(0, N, batch_size):
+        b1      = min(b0 + batch_size, N)
+        t_batch = t_out[b0:b1]
+        vis     = _compute_vis_batch_multi(t_batch, sensor_specs,
+                                           gs_ecef, up, sin_el_min,
+                                           use_sza, cos_sza_max_, cos_sza_min_)
+
+        frac_out[b0:b1] = vis.mean(axis=1)
+
+        for local_t in range(b1 - b0):
+            new = vis[local_t] & ~ever_covered
+            if new.any():
+                ever_covered |= new
+                n_covered    += int(new.sum())
+            cum_out[b0 + local_t] = n_covered / M
+
+    return {
+        't':                t_out,
+        'fraction':         frac_out,
+        'cumulative':       cum_out,
+        'mean_fraction':    float(np.mean(frac_out)),
+        'final_cumulative': float(cum_out[-1]),
+    }
+
+
+def _pointwise_coverage_multi(
+        lat:          npt.NDArray,
+        lon:          npt.NDArray,
+        sensor_specs: list,
+        t_start:      np.datetime64,
+        t_end:        np.datetime64,
+        alt:          float,
+        el_min:       float,
+        sza_max,
+        sza_min,
+        max_step:     np.timedelta64,
+        batch_size:   int,
+) -> dict:
+    """Multi-sensor implementation of :func:`pointwise_coverage`."""
+    use_sza      = sza_max is not None or sza_min is not None
+    cos_sza_max_ = float(np.cos(sza_max)) if sza_max is not None else None
+    cos_sza_min_ = float(np.cos(sza_min)) if sza_min is not None else None
+
+    lat = np.asarray(lat, dtype=np.float64)
+    lon = np.asarray(lon, dtype=np.float64)
+    M   = len(lat)
+    if M == 0:
+        raise ValueError("lat/lon arrays must not be empty")
+
+    gs_ecef, up = _build_gs(lat, lon, alt)
+    sin_el_min  = float(np.sin(el_min))
+
+    offs, t_start_us = _make_offsets(t_start, t_end, max_step)
+    N = len(offs)
+    t_out = t_start_us + offs.astype('timedelta64[us]')
+
+    if N == 0:
+        return {
+            't':       np.array([], dtype='datetime64[us]'),
+            'lat':     lat,
+            'lon':     lon,
+            'alt':     float(alt),
+            'visible': np.empty((0, M), dtype=np.bool_),
+        }
+
+    visible = np.empty((N, M), dtype=np.bool_)
+
+    for b0 in range(0, N, batch_size):
+        b1      = min(b0 + batch_size, N)
+        t_batch = t_out[b0:b1]
+        visible[b0:b1] = _compute_vis_batch_multi(
+            t_batch, sensor_specs, gs_ecef, up, sin_el_min,
+            use_sza, cos_sza_max_, cos_sza_min_,
+        )
+
+    return {
+        't':       t_out,
+        'lat':     lat,
+        'lon':     lon,
+        'alt':     float(alt),
+        'visible': visible,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -539,59 +755,12 @@ def coverage_fraction(
 
         ``final_cumulative`` : float — fraction of points covered ≥ once.
     """
-    use_fov, pointing_lvlh_norm, cos_fov, use_sza, cos_sza_max_, cos_sza_min_ = \
-        _parse_constraints(fov_pointing_lvlh, fov_half_angle, sza_max, sza_min)
-
-    lat = np.asarray(lat, dtype=np.float64)
-    lon = np.asarray(lon, dtype=np.float64)
-    M   = len(lat)
-    if M == 0:
-        raise ValueError("lat/lon arrays must not be empty")
-
-    gs_ecef, up = _build_gs(lat, lon, alt)
-    sin_el_min  = float(np.sin(el_min))
-
-    offs, t_start_us = _make_offsets(t_start, t_end, max_step)
-    N = len(offs)
-    if N == 0:
-        empty = np.array([], dtype=np.float32)
-        return {
-            't': np.array([], dtype='datetime64[us]'),
-            'fraction': empty, 'cumulative': empty,
-            'mean_fraction': float('nan'), 'final_cumulative': float('nan'),
-        }
-
-    t_out    = t_start_us + offs.astype('timedelta64[us]')   # (N,)
-    frac_out = np.empty(N, dtype=np.float32)
-    cum_out  = np.empty(N, dtype=np.float32)
-
-    ever_covered = np.zeros(M, dtype=np.bool_)
-    n_covered    = 0
-
-    for b0 in range(0, N, batch_size):
-        b1      = min(b0 + batch_size, N)
-        t_batch = t_out[b0:b1]
-        vis     = _compute_vis_batch(t_batch, keplerian_params, propagator_type,
-                                     gs_ecef, up, sin_el_min,
-                                     use_fov, pointing_lvlh_norm, cos_fov,
-                                     use_sza, cos_sza_max_, cos_sza_min_)  # (T, M)
-
-        frac_out[b0:b1] = vis.mean(axis=1)
-
-        for local_t in range(b1 - b0):
-            new = vis[local_t] & ~ever_covered
-            if new.any():
-                ever_covered |= new
-                n_covered    += int(new.sum())
-            cum_out[b0 + local_t] = n_covered / M
-
-    return {
-        't':                t_out,
-        'fraction':         frac_out,
-        'cumulative':       cum_out,
-        'mean_fraction':    float(np.mean(frac_out)),
-        'final_cumulative': float(cum_out[-1]),
-    }
+    spec = _make_sensor_spec(keplerian_params, propagator_type,
+                             fov_pointing_lvlh, fov_half_angle)
+    return _coverage_fraction_multi(
+        lat, lon, [spec], t_start, t_end,
+        alt, el_min, sza_max, sza_min, max_step, batch_size,
+    )
 
 
 def revisit_time(
@@ -759,50 +928,12 @@ def pointwise_coverage(
     Prefer :func:`coverage_fraction` or :func:`revisit_time` for summary
     statistics over large grids.
     """
-    use_fov, pointing_lvlh_norm, cos_fov, use_sza, cos_sza_max_, cos_sza_min_ = \
-        _parse_constraints(fov_pointing_lvlh, fov_half_angle, sza_max, sza_min)
-
-    lat = np.asarray(lat, dtype=np.float64)
-    lon = np.asarray(lon, dtype=np.float64)
-    M   = len(lat)
-    if M == 0:
-        raise ValueError("lat/lon arrays must not be empty")
-
-    gs_ecef, up = _build_gs(lat, lon, alt)
-    sin_el_min  = float(np.sin(el_min))
-
-    offs, t_start_us = _make_offsets(t_start, t_end, max_step)
-    N = len(offs)
-    t_out = t_start_us + offs.astype('timedelta64[us]')   # (N,)
-
-    if N == 0:
-        return {
-            't':       np.array([], dtype='datetime64[us]'),
-            'lat':     lat,
-            'lon':     lon,
-            'alt':     float(alt),
-            'visible': np.empty((0, M), dtype=np.bool_),
-        }
-
-    visible = np.empty((N, M), dtype=np.bool_)
-
-    for b0 in range(0, N, batch_size):
-        b1      = min(b0 + batch_size, N)
-        t_batch = t_out[b0:b1]
-        visible[b0:b1] = _compute_vis_batch(
-            t_batch, keplerian_params, propagator_type,
-            gs_ecef, up, sin_el_min,
-            use_fov, pointing_lvlh_norm, cos_fov,
-            use_sza, cos_sza_max_, cos_sza_min_,
-        )
-
-    return {
-        't':       t_out,
-        'lat':     lat,
-        'lon':     lon,
-        'alt':     float(alt),
-        'visible': visible,
-    }
+    spec = _make_sensor_spec(keplerian_params, propagator_type,
+                             fov_pointing_lvlh, fov_half_angle)
+    return _pointwise_coverage_multi(
+        lat, lon, [spec], t_start, t_end,
+        alt, el_min, sza_max, sza_min, max_step, batch_size,
+    )
 
 
 def access_pointwise(

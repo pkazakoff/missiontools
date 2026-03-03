@@ -10,32 +10,37 @@ import numpy.typing as npt
 
 from .aoi import AoI
 from .sensor import Sensor
-from .coverage import (
-    coverage_fraction  as _coverage_fraction,
-    revisit_time       as _revisit_time,
-    pointwise_coverage as _pointwise_coverage,
-    access_pointwise   as _access_pointwise,
-    revisit_pointwise  as _revisit_pointwise,
+from .coverage.coverage import (
+    _make_sensor_spec,
+    _coverage_fraction_multi,
+    _pointwise_coverage_multi,
+    _collect_access_intervals_multi,
 )
 
 _DEFAULT_STEP = np.timedelta64(30, 's')
 
 
 class Coverage:
-    """Coverage analysis for an area of interest observed by a sensor.
+    """Coverage analysis for an area of interest observed by one or more sensors.
 
-    The sensor must be attached to a :class:`~missiontools.Spacecraft` via
+    Each sensor must be attached to a :class:`~missiontools.Spacecraft` via
     :meth:`~missiontools.Spacecraft.add_sensor` before constructing a
     ``Coverage`` object.  The spacecraft orbit and propagator are derived
-    automatically from the sensor's back-reference.
+    automatically from each sensor's back-reference.
+
+    Combined visibility at each timestep is the **union** of all sensor FOVs.
+    The SZA constraint (if any) is applied globally after the union — it
+    represents an illumination or link condition on the ground, not on any
+    individual sensor.
 
     Parameters
     ----------
     aoi : AoI
         Area of interest containing ground sample points.
     sensors : list[Sensor]
-        List containing exactly **one** :class:`~missiontools.Sensor`.
-        Multiple sensors are not yet supported.
+        One or more :class:`~missiontools.Sensor` instances.  All sensors
+        must be attached to a spacecraft.  Sensors may belong to the same
+        spacecraft (multi-FOV) or to different spacecraft (constellation).
     el_min_deg : float, optional
         Minimum ground elevation angle (degrees) for a ground point to be
         considered in view.  Default 0 (horizon).
@@ -48,18 +53,15 @@ class Coverage:
 
     Notes
     -----
-    All five coverage methods evaluate the sensor's LVLH boresight at
+    All five coverage methods evaluate each sensor's LVLH boresight at
     *t_start* and assume it is constant in the LVLH frame for the full
     analysis window.  This is exact for sensors with fixed-LVLH pointing
     (nadir, fixed tilt, body-mounted on a nadir spacecraft) and an
     approximation for time-varying pointing modes.
 
-    Constellation coverage (multiple sensors on different spacecraft) is not
-    yet supported.
-
     Examples
     --------
-    ::
+    Single sensor::
 
         import numpy as np
         from missiontools import Spacecraft, Sensor, AoI, Coverage
@@ -78,6 +80,21 @@ class Coverage:
             np.datetime64('2025-01-02', 'us'),
         )
         print(result['final_cumulative'])
+
+    Constellation (two spacecraft at different RAANs)::
+
+        sc2    = Spacecraft(a=6_771_000., e=0., i=np.radians(51.6),
+                            raan=np.radians(90.), arg_p=0., ma=0.,
+                            epoch=np.datetime64('2025-01-01', 'us'))
+        s2     = Sensor(30.0, body_vector=[0, 0, 1])
+        sc2.add_sensor(s2)
+
+        cov2 = Coverage(aoi, [sensor, s2], el_min_deg=5.0)
+        result2 = cov2.coverage_fraction(
+            np.datetime64('2025-01-01', 'us'),
+            np.datetime64('2025-01-02', 'us'),
+        )
+        print(result2['final_cumulative'])   # ≥ single-satellite result
     """
 
     def __init__(
@@ -104,19 +121,11 @@ class Coverage:
                     f"Each element of sensors must be a Sensor instance, "
                     f"got {type(s).__name__!r}"
                 )
-        if len(sensors) > 1:
-            raise NotImplementedError(
-                "Multiple sensors are not yet supported. "
-                "Pass a list with exactly one Sensor."
-            )
-
-        # --- validate sensor is attached to a spacecraft --------------------
-        sensor = sensors[0]
-        if sensor.spacecraft is None:
-            raise RuntimeError(
-                "Sensor must be attached to a Spacecraft via add_sensor() "
-                "before use with Coverage."
-            )
+            if s.spacecraft is None:
+                raise RuntimeError(
+                    "Every sensor must be attached to a Spacecraft via "
+                    "add_sensor() before use with Coverage."
+                )
 
         # --- validate constraints -------------------------------------------
         if float(el_min_deg) < 0.0:
@@ -149,48 +158,37 @@ class Coverage:
     # Private helpers
     # ------------------------------------------------------------------
 
-    def _fov_params(
-            self,
-            t_start: np.datetime64,
-    ) -> tuple[npt.NDArray[np.floating], float]:
-        """Return ``(fov_pointing_lvlh, fov_half_angle_rad)`` for the single sensor.
+    def _all_sensor_specs(self, t_start: np.datetime64) -> list:
+        """Return a sensor-spec tuple for every sensor, evaluated at *t_start*.
 
-        The boresight is evaluated at *t_start* and assumed constant in the
-        LVLH frame for the duration of the analysis window.
+        Each spec encodes the spacecraft keplerian parameters, propagator type,
+        and the frozen LVLH boresight direction assumed constant over the
+        analysis window.
         """
-        sensor = self._sensors[0]
-        sc     = sensor.spacecraft
-        state  = sc.propagate(
-            t_start,
-            t_start + np.timedelta64(1, 's'),
-            np.timedelta64(1, 's'),
-        )
-        r, v, t = state['r'][0], state['v'][0], state['t'][0]
-        return sensor.pointing_lvlh(r, v, t), sensor.half_angle_rad
+        specs = []
+        for sensor in self._sensors:
+            sc    = sensor.spacecraft
+            state = sc.propagate(
+                t_start,
+                t_start + np.timedelta64(1, 's'),
+                np.timedelta64(1, 's'),
+            )
+            r, v, t = state['r'][0], state['v'][0], state['t'][0]
+            specs.append(_make_sensor_spec(
+                sc.keplerian_params,
+                sc.propagator_type,
+                sensor.pointing_lvlh(r, v, t),
+                sensor.half_angle_rad,
+            ))
+        return specs
 
-    def _call_kwargs(
-            self,
-            t_start: np.datetime64,
-            alt: float,
-            max_step: np.timedelta64,
-            batch_size: int,
-    ) -> dict:
-        """Shared keyword arguments for the functional coverage API."""
-        fov_pointing, fov_half_angle = self._fov_params(t_start)
-        sc = self._sensors[0].spacecraft
-        return dict(
-            propagator_type   = sc.propagator_type,
-            el_min            = np.radians(self._el_min_deg),
-            sza_max           = (np.radians(self._sza_max_deg)
-                                 if self._sza_max_deg is not None else None),
-            sza_min           = (np.radians(self._sza_min_deg)
-                                 if self._sza_min_deg is not None else None),
-            fov_pointing_lvlh = fov_pointing,
-            fov_half_angle    = fov_half_angle,
-            alt               = alt,
-            max_step          = max_step,
-            batch_size        = batch_size,
-        )
+    def _sza_rad(self) -> tuple[float | None, float | None]:
+        """Return ``(sza_max, sza_min)`` in radians (or ``None``)."""
+        sza_max = (np.radians(self._sza_max_deg)
+                   if self._sza_max_deg is not None else None)
+        sza_min = (np.radians(self._sza_min_deg)
+                   if self._sza_min_deg is not None else None)
+        return sza_max, sza_min
 
     # ------------------------------------------------------------------
     # Coverage methods
@@ -227,12 +225,14 @@ class Coverage:
             ``'final_cumulative'``.  See
             :func:`~missiontools.coverage.coverage_fraction`.
         """
-        sc = self._sensors[0].spacecraft
-        return _coverage_fraction(
+        sza_max, sza_min = self._sza_rad()
+        return _coverage_fraction_multi(
             self._aoi.lat_rad, self._aoi.lon_rad,
-            sc.keplerian_params,
+            self._all_sensor_specs(t_start),
             t_start, t_end,
-            **self._call_kwargs(t_start, alt, max_step, batch_size),
+            alt, np.radians(self._el_min_deg),
+            sza_max, sza_min,
+            max_step, batch_size,
         )
 
     def revisit_time(
@@ -266,13 +266,39 @@ class Coverage:
             ``'global_mean'``.  See
             :func:`~missiontools.coverage.revisit_time`.
         """
-        sc = self._sensors[0].spacecraft
-        return _revisit_time(
-            self._aoi.lat_rad, self._aoi.lon_rad,
-            sc.keplerian_params,
+        sza_max, sza_min = self._sza_rad()
+        lat = self._aoi.lat_rad
+        lon = self._aoi.lon_rad
+        M   = len(lat)
+
+        intervals = _collect_access_intervals_multi(
+            lat, lon,
+            self._all_sensor_specs(t_start),
             t_start, t_end,
-            **self._call_kwargs(t_start, alt, max_step, batch_size),
+            alt, np.radians(self._el_min_deg),
+            sza_max, sza_min,
+            max_step, batch_size,
+            close_at_end=False,
         )
+
+        max_revisit  = np.full(M, np.nan)
+        mean_revisit = np.full(M, np.nan)
+        for m, ivals in enumerate(intervals):
+            if len(ivals) >= 2:
+                gaps_us = np.array([
+                    int((ivals[i + 1][0] - ivals[i][1]) / np.timedelta64(1, 'us'))
+                    for i in range(len(ivals) - 1)
+                ], dtype=np.float64)
+                max_revisit[m]  = gaps_us.max()  / 1e6
+                mean_revisit[m] = gaps_us.mean() / 1e6
+
+        has_gaps = ~np.isnan(max_revisit)
+        return {
+            'max_revisit':  max_revisit,
+            'mean_revisit': mean_revisit,
+            'global_max':   float(np.nanmax(max_revisit))   if has_gaps.any() else float('nan'),
+            'global_mean':  float(np.nanmean(mean_revisit)) if has_gaps.any() else float('nan'),
+        }
 
     def pointwise_coverage(
             self,
@@ -304,12 +330,14 @@ class Coverage:
             ``'t'``, ``'lat'``, ``'lon'``, ``'alt'``, ``'visible'``.  See
             :func:`~missiontools.coverage.pointwise_coverage`.
         """
-        sc = self._sensors[0].spacecraft
-        return _pointwise_coverage(
+        sza_max, sza_min = self._sza_rad()
+        return _pointwise_coverage_multi(
             self._aoi.lat_rad, self._aoi.lon_rad,
-            sc.keplerian_params,
+            self._all_sensor_specs(t_start),
             t_start, t_end,
-            **self._call_kwargs(t_start, alt, max_step, batch_size),
+            alt, np.radians(self._el_min_deg),
+            sza_max, sza_min,
+            max_step, batch_size,
         )
 
     def access_pointwise(
@@ -342,12 +370,15 @@ class Coverage:
             ``result[m]`` is a list of ``(AOS, LOS)`` pairs for ground point *m*.
             See :func:`~missiontools.coverage.access_pointwise`.
         """
-        sc = self._sensors[0].spacecraft
-        return _access_pointwise(
+        sza_max, sza_min = self._sza_rad()
+        return _collect_access_intervals_multi(
             self._aoi.lat_rad, self._aoi.lon_rad,
-            sc.keplerian_params,
+            self._all_sensor_specs(t_start),
             t_start, t_end,
-            **self._call_kwargs(t_start, alt, max_step, batch_size),
+            alt, np.radians(self._el_min_deg),
+            sza_max, sza_min,
+            max_step, batch_size,
+            close_at_end=True,
         )
 
     def revisit_pointwise(
@@ -380,10 +411,25 @@ class Coverage:
             ``result[m]`` is an array of LOS-to-AOS gap durations for ground
             point *m*.  See :func:`~missiontools.coverage.revisit_pointwise`.
         """
-        sc = self._sensors[0].spacecraft
-        return _revisit_pointwise(
+        sza_max, sza_min = self._sza_rad()
+        intervals = _collect_access_intervals_multi(
             self._aoi.lat_rad, self._aoi.lon_rad,
-            sc.keplerian_params,
+            self._all_sensor_specs(t_start),
             t_start, t_end,
-            **self._call_kwargs(t_start, alt, max_step, batch_size),
+            alt, np.radians(self._el_min_deg),
+            sza_max, sza_min,
+            max_step, batch_size,
+            close_at_end=False,
         )
+
+        result = []
+        for ivals in intervals:
+            if len(ivals) >= 2:
+                gaps = np.array([
+                    ivals[i + 1][0] - ivals[i][1]
+                    for i in range(len(ivals) - 1)
+                ], dtype='timedelta64[us]')
+            else:
+                gaps = np.array([], dtype='timedelta64[us]')
+            result.append(gaps)
+        return result
