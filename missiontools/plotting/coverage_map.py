@@ -111,28 +111,39 @@ def plot_coverage_map(
     if auto_window:
         _set_extent(ax, lat_deg, lon_deg)
 
-    # Build a regular grid over the AoI bounding box
-    lon_min, lon_max = float(lon_deg.min()), float(lon_deg.max())
-    lat_min, lat_max = float(lat_deg.min()), float(lat_deg.max())
+    # Transform AoI sample points into the axes' native projected CRS so that
+    # the interpolation grid is rectangular in display space.  A lat/lon grid
+    # maps to a curved trapezoid in conic projections, leaving corners empty.
+    proj = ax.projection
+    pts  = proj.transform_points(ccrs.PlateCarree(), lon_deg, lat_deg)
+    x_pts, y_pts = pts[:, 0], pts[:, 1]
+    valid    = np.isfinite(x_pts) & np.isfinite(y_pts)
+    x_pts    = x_pts[valid]
+    y_pts    = y_pts[valid]
+    vals_valid = values[valid]
 
-    lon_grid = np.linspace(lon_min, lon_max, grid_resolution)
-    lat_grid = np.linspace(lat_min, lat_max, grid_resolution)
-    lon_mg, lat_mg = np.meshgrid(lon_grid, lat_grid)
+    x_min, x_max = float(x_pts.min()), float(x_pts.max())
+    y_min, y_max = float(y_pts.min()), float(y_pts.max())
 
-    # Interpolate scattered points onto the regular grid (NaN outside hull)
+    x_grid = np.linspace(x_min, x_max, grid_resolution)
+    y_grid = np.linspace(y_min, y_max, grid_resolution)
+    x_mg, y_mg = np.meshgrid(x_grid, y_grid)
+
+    # Interpolate in projected coordinates (NaN outside convex hull)
     z = griddata(
-        (lon_deg, lat_deg),
-        values,
-        (lon_mg, lat_mg),
+        (x_pts, y_pts),
+        vals_valid,
+        (x_mg, y_mg),
         method='linear',
     )
 
+    # Data is already in the projection's coordinate system
     mesh = ax.pcolormesh(
-        lon_mg, lat_mg, z,
+        x_mg, y_mg, z,
         cmap=cmap,
         vmin=vmin,
         vmax=vmax,
-        transform=ccrs.PlateCarree(),
+        transform=proj,
     )
 
     if colorbar:
