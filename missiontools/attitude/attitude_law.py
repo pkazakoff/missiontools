@@ -302,16 +302,25 @@ class AttitudeLaw:
         return cls('track', target=target, roll=roll)
 
     @classmethod
-    def nadir(cls) -> AttitudeLaw:
+    def nadir(cls, roll: float = 0.0) -> AttitudeLaw:
         """Earth-nadir pointing law (body-z = −R̂ in LVLH).
 
-        Full 3-DOF convention: body-z = nadir (−R̂), body-x = along-track (Ŝ),
-        body-y = −orbit-normal (−Ŵ).  This is a right-handed body frame.
+        Full 3-DOF convention at ``roll=0``: body-z = nadir (−R̂),
+        body-x = along-track (Ŝ), body-y = −orbit-normal (−Ŵ).  This is a
+        right-handed body frame.
 
-        Equivalent to ``fixed([-1, 0, 0], 'lvlh')`` with a specific roll
-        chosen so that body-x aligns with the along-track direction.
+        Parameters
+        ----------
+        roll : float, optional
+            Roll angle (rad) about the boresight (nadir) axis.  Default 0
+            gives body-x = along-track.
         """
-        return cls('fixed', q=_NADIR_Q.copy(), frame='lvlh')
+        if roll == 0.0:
+            q = _NADIR_Q.copy()
+        else:
+            q_roll = np.array([np.cos(roll / 2), 0., 0., np.sin(roll / 2)])
+            q = _q_compose(_NADIR_Q, q_roll)
+        return cls('fixed', q=q, frame='lvlh')
 
     # ------------------------------------------------------------------
     # Pointing methods

@@ -131,6 +131,40 @@ class TestAttitudeLawFixed:
         assert not np.allclose(p[0], p[1], atol=1e-4)
 
 
+class TestNadirRoll:
+
+    def test_roll_zero_same_as_default(self):
+        law0 = AttitudeLaw.nadir()
+        law1 = AttitudeLaw.nadir(roll=0.0)
+        np.testing.assert_allclose(law0._q, law1._q, atol=1e-15)
+
+    def test_boresight_unchanged_with_roll(self):
+        """Roll rotates about boresight, so the boresight direction must stay [-1,0,0]."""
+        for roll in [0.3, -0.5, np.pi]:
+            law = AttitudeLaw.nadir(roll=roll)
+            np.testing.assert_allclose(_q_boresight(law._q),
+                                       [-1.0, 0.0, 0.0], atol=1e-12)
+
+    def test_roll_rotates_body_x(self):
+        """Body-x should rotate in the LVLH S-W plane by the roll angle."""
+        from missiontools.attitude.attitude_law import _q_rotate
+        roll = np.radians(45)
+        law = AttitudeLaw.nadir(roll=roll)
+        body_x_in_lvlh = _q_rotate(law._q, np.array([1., 0., 0.]))
+        # At roll=0, body-x = S-hat = [0,1,0] in LVLH
+        # Roll rotates in the plane perpendicular to boresight (nadir)
+        expected = np.array([0., np.cos(roll), -np.sin(roll)])
+        np.testing.assert_allclose(body_x_in_lvlh, expected, atol=1e-12)
+
+    def test_full_rotation_returns_to_start(self):
+        """2*pi roll gives the same physical rotation (q and -q are equivalent)."""
+        law0 = AttitudeLaw.nadir()
+        law_full = AttitudeLaw.nadir(roll=2 * np.pi)
+        # Quaternion double cover: q and -q represent the same rotation
+        sign = np.sign(law0._q[0] * law_full._q[0])
+        np.testing.assert_allclose(law0._q, sign * law_full._q, atol=1e-12)
+
+
 # ===========================================================================
 # Target-tracking attitude laws
 # ===========================================================================
