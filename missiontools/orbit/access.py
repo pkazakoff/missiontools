@@ -4,6 +4,7 @@ import numpy.typing as npt
 from .constants import EARTH_MEAN_RADIUS
 from .frames import geodetic_to_ecef, eci_to_ecef
 from .propagation import propagate_analytical
+from ..cache import cached_propagate_analytical
 
 
 def earth_access(vecs:   npt.NDArray[np.floating],
@@ -163,23 +164,42 @@ def earth_access_intervals(
     def t_at(off: int) -> np.datetime64:
         return t_start + np.timedelta64(int(off), 'us')
 
-    def access_at(off: int) -> bool:
-        t_arr = np.array([t_at(off)])
+    def _access_batch(off_arr: npt.NDArray[np.int64]) -> npt.NDArray[np.bool_]:
+        """Evaluate access for an array of µs offsets in one propagation call."""
+        t_arr = t_start + off_arr.astype('timedelta64[us]')
         r, _ = propagate_analytical(t_arr, **keplerian_params,
                                     type=propagator_type)
-        return bool(earth_access(r, lat, lon, alt, el_min,
-                                 frame='eci', t=t_arr)[0])
+        return earth_access(r, lat, lon, alt, el_min, frame='eci', t=t_arr)
 
-    def refine(lo: int, hi: int, rising: bool) -> int:
-        """Binary search: converge on the transition to within tol_us."""
-        tol = max(tol_us, 1)          # guard against zero-tolerance infinite loop
-        while hi - lo > tol:
-            mid = lo + (hi - lo) // 2
-            if rising == access_at(mid):
-                hi = mid
-            else:
-                lo = mid
-        return hi if rising else lo
+    def _refine_vectorized(
+            transitions: list[tuple[int, int, bool]],
+    ) -> list[int]:
+        """Batch binary search: refine all transitions simultaneously.
+
+        Each element is ``(lo_us, hi_us, rising)``.  Returns the refined
+        offset (µs) for each transition in the same order.
+        """
+        if not transitions:
+            return []
+        tol = max(tol_us, 1)
+        los    = np.array([t[0] for t in transitions], dtype=np.int64)
+        his    = np.array([t[1] for t in transitions], dtype=np.int64)
+        rising = np.array([t[2] for t in transitions], dtype=np.bool_)
+
+        while np.any(his - los > tol):
+            active = his - los > tol
+            mids   = los + (his - los) // 2
+            # Only propagate active midpoints
+            active_idx  = np.where(active)[0]
+            active_mids = mids[active_idx]
+            flags       = _access_batch(active_mids)
+            # Update: if rising == flag → hi = mid, else lo = mid
+            match = rising[active_idx] == flags
+            his[active_idx[match]]  = active_mids[match]
+            los[active_idx[~match]] = active_mids[~match]
+
+        return [int(his[j]) if rising[j] else int(los[j])
+                for j in range(len(transitions))]
 
     # --- batched coarse scan ---
 
@@ -187,14 +207,15 @@ def earth_access_intervals(
     interval_start_us: int | None = None
     prev_flag: bool | None = None
     prev_offset: int = 0
+    pending_transitions: list[tuple[int, int, bool]] = []
 
     for batch_start in range(0, n_total, batch_size):
         batch_end  = min(batch_start + batch_size, n_total)
         batch_offs = offsets[batch_start:batch_end]
 
         t_batch = t_start + batch_offs.astype('timedelta64[us]')
-        r, _    = propagate_analytical(t_batch, **keplerian_params,
-                                       type=propagator_type)
+        r, _    = cached_propagate_analytical(t_batch, **keplerian_params,
+                                              type=propagator_type)
         flags   = earth_access(r, lat, lon, alt, el_min,
                                 frame='eci', t=t_batch)
 
@@ -218,17 +239,21 @@ def earth_access_intervals(
             lo     = prev_offset if k == 0 else int(batch_offs[k - 1])
             hi     = int(batch_offs[k])
             rising = not bool(prev_and_flags[k])   # prev state False → rising
-
-            if rising:
-                interval_start_us = refine(lo, hi, rising=True)
-            else:
-                t_fall = refine(lo, hi, rising=False)
-                if interval_start_us is not None:
-                    intervals.append((t_at(interval_start_us), t_at(t_fall)))
-                interval_start_us = None
+            pending_transitions.append((lo, hi, rising))
 
         prev_flag   = bool(flags[-1])
         prev_offset = int(batch_offs[-1])
+
+    # --- vectorized refinement of all transitions at once ---
+    refined = _refine_vectorized(pending_transitions)
+
+    for idx, (_, _, rising) in enumerate(pending_transitions):
+        if rising:
+            interval_start_us = refined[idx]
+        else:
+            if interval_start_us is not None:
+                intervals.append((t_at(interval_start_us), t_at(refined[idx])))
+            interval_start_us = None
 
     # Close any interval still open at t_end
     if interval_start_us is not None:
@@ -381,38 +406,54 @@ def space_to_space_access_intervals(
     def t_at(off: int) -> np.datetime64:
         return t_start + np.timedelta64(int(off), 'us')
 
-    def access_at(off: int) -> bool:
-        t_arr = np.array([t_at(off)])
-        r1, _ = propagate_analytical(t_arr, **keplerian_params_1,
-                                     type=propagator_type)
-        r2, _ = propagate_analytical(t_arr, **keplerian_params_2,
-                                     type=propagator_type)
-        return bool(space_to_space_access(r1, r2, body_radius)[0])
+    def _access_batch(off_arr: npt.NDArray[np.int64]) -> npt.NDArray[np.bool_]:
+        """Evaluate space-to-space access for an array of µs offsets."""
+        t_arr = t_start + off_arr.astype('timedelta64[us]')
+        r1, _ = cached_propagate_analytical(t_arr, **keplerian_params_1,
+                                            type=propagator_type)
+        r2, _ = cached_propagate_analytical(t_arr, **keplerian_params_2,
+                                            type=propagator_type)
+        return space_to_space_access(r1, r2, body_radius)
 
-    def refine(lo: int, hi: int, rising: bool) -> int:
+    def _refine_vectorized(
+            transitions: list[tuple[int, int, bool]],
+    ) -> list[int]:
+        """Batch binary search for all transitions simultaneously."""
+        if not transitions:
+            return []
         tol = max(tol_us, 1)
-        while hi - lo > tol:
-            mid = lo + (hi - lo) // 2
-            if rising == access_at(mid):
-                hi = mid
-            else:
-                lo = mid
-        return hi if rising else lo
+        los    = np.array([t[0] for t in transitions], dtype=np.int64)
+        his    = np.array([t[1] for t in transitions], dtype=np.int64)
+        rising = np.array([t[2] for t in transitions], dtype=np.bool_)
+
+        while np.any(his - los > tol):
+            active = his - los > tol
+            mids   = los + (his - los) // 2
+            active_idx  = np.where(active)[0]
+            active_mids = mids[active_idx]
+            flags       = _access_batch(active_mids)
+            match = rising[active_idx] == flags
+            his[active_idx[match]]  = active_mids[match]
+            los[active_idx[~match]] = active_mids[~match]
+
+        return [int(his[j]) if rising[j] else int(los[j])
+                for j in range(len(transitions))]
 
     intervals: list[tuple[np.datetime64, np.datetime64]] = []
     interval_start_us: int | None = None
     prev_flag: bool | None = None
     prev_offset: int = 0
+    pending_transitions: list[tuple[int, int, bool]] = []
 
     for batch_start in range(0, n_total, batch_size):
         batch_end  = min(batch_start + batch_size, n_total)
         batch_offs = offsets[batch_start:batch_end]
 
         t_batch = t_start + batch_offs.astype('timedelta64[us]')
-        r1, _   = propagate_analytical(t_batch, **keplerian_params_1,
-                                       type=propagator_type)
-        r2, _   = propagate_analytical(t_batch, **keplerian_params_2,
-                                       type=propagator_type)
+        r1, _   = cached_propagate_analytical(t_batch, **keplerian_params_1,
+                                              type=propagator_type)
+        r2, _   = cached_propagate_analytical(t_batch, **keplerian_params_2,
+                                              type=propagator_type)
         flags   = space_to_space_access(r1, r2, body_radius)
 
         if prev_flag is None:
@@ -433,17 +474,21 @@ def space_to_space_access_intervals(
             lo     = prev_offset if k == 0 else int(batch_offs[k - 1])
             hi     = int(batch_offs[k])
             rising = not bool(prev_and_flags[k])
-
-            if rising:
-                interval_start_us = refine(lo, hi, rising=True)
-            else:
-                t_fall = refine(lo, hi, rising=False)
-                if interval_start_us is not None:
-                    intervals.append((t_at(interval_start_us), t_at(t_fall)))
-                interval_start_us = None
+            pending_transitions.append((lo, hi, rising))
 
         prev_flag   = bool(flags[-1])
         prev_offset = int(batch_offs[-1])
+
+    # --- vectorized refinement of all transitions at once ---
+    refined = _refine_vectorized(pending_transitions)
+
+    for idx, (_, _, rising) in enumerate(pending_transitions):
+        if rising:
+            interval_start_us = refined[idx]
+        else:
+            if interval_start_us is not None:
+                intervals.append((t_at(interval_start_us), t_at(refined[idx])))
+            interval_start_us = None
 
     if interval_start_us is not None:
         intervals.append((t_at(interval_start_us), t_end))

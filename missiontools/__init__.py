@@ -99,3 +99,4 @@ from .aoi import AoI
 from .sensor import Sensor
 from .coverage_analysis import Coverage
 from .power import AbstractSolarConfig, NormalVectorSolarConfig
+from .cache import clear_cache, set_cache_limit, cache_info
