@@ -92,6 +92,7 @@ class Spacecraft:
         self._attitude_law: AttitudeLaw = AttitudeLaw.nadir()
         self._sensors: list = []
         self._solar_configs: list = []
+        self._thermal_configs: list = []
 
     @property
     def attitude_law(self) -> AttitudeLaw:
@@ -141,6 +142,37 @@ class Spacecraft:
             )
         config._spacecraft = self
         self._solar_configs.append(config)
+
+    @property
+    def thermal_configs(self) -> list:
+        """Thermal configs attached to this spacecraft (read-only copy)."""
+        return list(self._thermal_configs)
+
+    def add_thermal_config(self, config) -> None:
+        """Attach a thermal config to this spacecraft.
+
+        Sets the config's back-reference to this spacecraft and appends it to
+        the internal thermal configs list.
+
+        Parameters
+        ----------
+        config : AbstractThermalConfig
+            The thermal config to attach.
+
+        Raises
+        ------
+        TypeError
+            If ``config`` is not an
+            :class:`~missiontools.thermal.AbstractThermalConfig` instance.
+        """
+        from .thermal.thermal_config import AbstractThermalConfig
+        if not isinstance(config, AbstractThermalConfig):
+            raise TypeError(
+                f"config must be an AbstractThermalConfig instance, "
+                f"got {type(config).__name__!r}"
+            )
+        config._spacecraft = self
+        self._thermal_configs.append(config)
 
     def add_sensor(self, sensor) -> None:
         """Attach a Sensor to this spacecraft.

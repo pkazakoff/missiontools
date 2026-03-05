@@ -1,9 +1,15 @@
-"""Tests for missiontools.thermal.thermal_circuit."""
+"""Tests for missiontools.thermal."""
 
 import numpy as np
 import pytest
 
-from missiontools.thermal import ThermalCircuit, ThermalResult
+from missiontools.thermal import (
+    ThermalCircuit,
+    ThermalResult,
+    AbstractThermalConfig,
+    NormalVectorThermalConfig,
+)
+from missiontools.thermal.thermal_config import STEFAN_BOLTZMANN
 
 
 # ===================================================================
@@ -595,9 +601,348 @@ class TestSteadyState:
 
 
 # ===================================================================
+# ThermalConfig construction & validation
+# ===================================================================
+
+class TestNormalVectorThermalConfigConstruction:
+    def test_basic(self):
+        cfg = NormalVectorThermalConfig(
+            normal_vecs=[[0, 0, 1], [0, 0, -1]],
+            areas=[0.5, 0.3],
+            emissivities=[0.8, 0.9],
+            absorptivities=[0.3, 0.2],
+        )
+        assert cfg.num_faces == 2
+        np.testing.assert_allclose(cfg.areas, [0.5, 0.3])
+        np.testing.assert_allclose(cfg.emissivities, [0.8, 0.9])
+        np.testing.assert_allclose(cfg.absorptivities, [0.3, 0.2])
+
+    def test_normals_are_normalized(self):
+        cfg = NormalVectorThermalConfig(
+            normal_vecs=[[0, 0, 3]],
+            areas=[1.0],
+            emissivities=[0.8],
+            absorptivities=[0.3],
+        )
+        np.testing.assert_allclose(cfg.normals, [[0, 0, 1]])
+
+    def test_properties_return_copies(self):
+        cfg = NormalVectorThermalConfig(
+            normal_vecs=[[1, 0, 0]],
+            areas=[1.0],
+            emissivities=[0.8],
+            absorptivities=[0.3],
+        )
+        a = cfg.areas
+        a[0] = 999.0
+        assert cfg.areas[0] == 1.0
+
+    def test_wrong_normal_shape_raises(self):
+        with pytest.raises(ValueError, match="shape"):
+            NormalVectorThermalConfig(
+                normal_vecs=[[1, 0]],
+                areas=[1.0],
+                emissivities=[0.8],
+                absorptivities=[0.3],
+            )
+
+    def test_mismatched_lengths_raises(self):
+        with pytest.raises(ValueError, match="length"):
+            NormalVectorThermalConfig(
+                normal_vecs=[[1, 0, 0], [0, 1, 0]],
+                areas=[1.0],
+                emissivities=[0.8],
+                absorptivities=[0.3],
+            )
+
+    def test_zero_normal_raises(self):
+        with pytest.raises(ValueError, match="non-zero"):
+            NormalVectorThermalConfig(
+                normal_vecs=[[0, 0, 0]],
+                areas=[1.0],
+                emissivities=[0.8],
+                absorptivities=[0.3],
+            )
+
+    def test_negative_area_raises(self):
+        with pytest.raises(ValueError, match="positive"):
+            NormalVectorThermalConfig(
+                normal_vecs=[[1, 0, 0]],
+                areas=[-1.0],
+                emissivities=[0.8],
+                absorptivities=[0.3],
+            )
+
+    def test_emissivity_out_of_range(self):
+        with pytest.raises(ValueError, match="\\[0, 1\\]"):
+            NormalVectorThermalConfig(
+                normal_vecs=[[1, 0, 0]],
+                areas=[1.0],
+                emissivities=[1.5],
+                absorptivities=[0.3],
+            )
+
+    def test_absorptivity_out_of_range(self):
+        with pytest.raises(ValueError, match="\\[0, 1\\]"):
+            NormalVectorThermalConfig(
+                normal_vecs=[[1, 0, 0]],
+                areas=[1.0],
+                emissivities=[0.8],
+                absorptivities=[-0.1],
+            )
+
+
+class TestSpacecraftAttachment:
+    def test_add_thermal_config(self):
+        from missiontools import Spacecraft
+        sc = Spacecraft.sunsync(altitude_km=550, node_solar_time='10:30')
+        cfg = NormalVectorThermalConfig(
+            normal_vecs=[[0, 0, 1]],
+            areas=[0.5],
+            emissivities=[0.8],
+            absorptivities=[0.3],
+        )
+        sc.add_thermal_config(cfg)
+        assert cfg.spacecraft is sc
+        assert len(sc.thermal_configs) == 1
+
+    def test_wrong_type_raises(self):
+        from missiontools import Spacecraft
+        sc = Spacecraft.sunsync(altitude_km=550, node_solar_time='10:30')
+        with pytest.raises(TypeError, match="AbstractThermalConfig"):
+            sc.add_thermal_config("not a config")
+
+    def test_require_spacecraft_raises(self):
+        cfg = NormalVectorThermalConfig(
+            normal_vecs=[[0, 0, 1]],
+            areas=[0.5],
+            emissivities=[0.8],
+            absorptivities=[0.3],
+        )
+        circuit = ThermalCircuit()
+        circuit.add_capacitance('n', 10.0)
+        with pytest.raises(RuntimeError, match="attached"):
+            cfg.attach(
+                circuit,
+                face_nodes=['n'],
+                t_start=np.datetime64('2025-01-01', 'us'),
+                t_end=np.datetime64('2025-01-01T01:00', 'us'),
+                step=np.timedelta64(60, 's'),
+            )
+
+
+class TestAttach:
+    """Test the attach() method and coupled solving."""
+
+    @pytest.fixture
+    def sc(self):
+        from missiontools import Spacecraft
+        return Spacecraft.sunsync(altitude_km=550, node_solar_time='10:30')
+
+    def test_face_nodes_length_mismatch_raises(self, sc):
+        cfg = NormalVectorThermalConfig(
+            normal_vecs=[[0, 0, 1], [0, 0, -1]],
+            areas=[0.5, 0.5],
+            emissivities=[0.8, 0.8],
+            absorptivities=[0.3, 0.3],
+        )
+        sc.add_thermal_config(cfg)
+        circuit = ThermalCircuit()
+        circuit.add_capacitance('a', 10.0)
+        with pytest.raises(ValueError, match="face_nodes length"):
+            cfg.attach(
+                circuit,
+                face_nodes=['a'],  # only 1, but 2 faces
+                t_start=np.datetime64('2025-01-01', 'us'),
+                t_end=np.datetime64('2025-01-01T01:00', 'us'),
+                step=np.timedelta64(60, 's'),
+            )
+
+    def test_attach_returns_duration(self, sc):
+        cfg = NormalVectorThermalConfig(
+            normal_vecs=[[0, 0, 1]],
+            areas=[0.5],
+            emissivities=[0.8],
+            absorptivities=[0.3],
+        )
+        sc.add_thermal_config(cfg)
+        circuit = ThermalCircuit()
+        circuit.add_capacitance('n', 10.0)
+        duration = cfg.attach(
+            circuit,
+            face_nodes=['n'],
+            t_start=np.datetime64('2025-01-01', 'us'),
+            t_end=np.datetime64('2025-01-01T01:00', 'us'),
+            step=np.timedelta64(60, 's'),
+        )
+        assert duration == pytest.approx(3600.0, abs=1.0)
+
+    def test_attach_adds_loads_to_circuit(self, sc):
+        cfg = NormalVectorThermalConfig(
+            normal_vecs=[[0, 0, 1], [0, 0, -1]],
+            areas=[0.5, 0.5],
+            emissivities=[0.8, 0.8],
+            absorptivities=[0.3, 0.3],
+        )
+        sc.add_thermal_config(cfg)
+        circuit = ThermalCircuit()
+        circuit.add_capacitance('a', 10.0)
+        circuit.add_capacitance('b', 10.0)
+        cfg.attach(
+            circuit,
+            face_nodes=['a', 'b'],
+            t_start=np.datetime64('2025-01-01', 'us'),
+            t_end=np.datetime64('2025-01-01T01:00', 'us'),
+            step=np.timedelta64(60, 's'),
+        )
+        assert 'thermal_face_0' in circuit._all_names
+        assert 'thermal_face_1' in circuit._all_names
+
+    def test_custom_prefix(self, sc):
+        cfg = NormalVectorThermalConfig(
+            normal_vecs=[[0, 0, 1]],
+            areas=[0.5],
+            emissivities=[0.8],
+            absorptivities=[0.3],
+        )
+        sc.add_thermal_config(cfg)
+        circuit = ThermalCircuit()
+        circuit.add_capacitance('n', 10.0)
+        cfg.attach(
+            circuit,
+            face_nodes=['n'],
+            t_start=np.datetime64('2025-01-01', 'us'),
+            t_end=np.datetime64('2025-01-01T01:00', 'us'),
+            step=np.timedelta64(60, 's'),
+            prefix='mysat',
+        )
+        assert 'mysat_face_0' in circuit._all_names
+
+    def test_coupled_solve_runs(self, sc):
+        """Smoke test: attach + solve completes without error."""
+        cfg = NormalVectorThermalConfig(
+            normal_vecs=[[0, 0, 1]],
+            areas=[0.5],
+            emissivities=[0.8],
+            absorptivities=[0.3],
+        )
+        sc.add_thermal_config(cfg)
+        circuit = ThermalCircuit()
+        circuit.add_capacitance('panel', 50.0, initial_temp=300.0)
+        duration = cfg.attach(
+            circuit,
+            face_nodes=['panel'],
+            t_start=np.datetime64('2025-01-01', 'us'),
+            t_end=np.datetime64('2025-01-01T01:00', 'us'),
+            step=np.timedelta64(60, 's'),
+        )
+        result = circuit.solve(duration)
+        assert result.success
+        assert 'panel' in result.temperatures
+        assert len(result.temperatures['panel']) > 1
+
+    def test_multiple_faces_same_node(self, sc):
+        """Two faces on the same node both contribute."""
+        cfg = NormalVectorThermalConfig(
+            normal_vecs=[[0, 0, 1], [0, 0, -1]],
+            areas=[0.5, 0.5],
+            emissivities=[0.8, 0.8],
+            absorptivities=[0.3, 0.3],
+        )
+        sc.add_thermal_config(cfg)
+        circuit = ThermalCircuit()
+        circuit.add_capacitance('panel', 50.0, initial_temp=300.0)
+        duration = cfg.attach(
+            circuit,
+            face_nodes=['panel', 'panel'],
+            t_start=np.datetime64('2025-01-01', 'us'),
+            t_end=np.datetime64('2025-01-01T01:00', 'us'),
+            step=np.timedelta64(60, 's'),
+        )
+        result = circuit.solve(duration)
+        assert result.success
+
+
+class TestRadiativeEquilibrium:
+    """A face with constant solar absorption should reach radiative
+    equilibrium: T_eq = (α·S / (ε·σ))^(1/4).
+
+    We test this using a load_fn that simulates constant solar input
+    (avoiding orbital geometry complications) to verify the T⁴ emission
+    model reaches the correct equilibrium.
+    """
+
+    def test_equilibrium_temperature(self):
+        alpha = 0.3
+        S = 1366.0
+        eps = 0.8
+        area = 1.0
+
+        # Analytical equilibrium: absorbed = emitted
+        # α·S·A = ε·σ·A·T⁴  →  T_eq = (α·S / (ε·σ))^(1/4)
+        T_eq = (alpha * S / (eps * STEFAN_BOLTZMANN)) ** 0.25
+
+        # Use a direct load_fn to simulate constant solar absorption
+        # plus T⁴ emission, bypassing orbital geometry
+        q_solar = alpha * S * area
+
+        circuit = ThermalCircuit()
+        circuit.add_capacitance('panel', 5.0, initial_temp=200.0)
+        circuit.add_load(
+            'face', 'panel',
+            lambda t, T: q_solar - eps * STEFAN_BOLTZMANN * area * T ** 4,
+        )
+
+        # Solve long enough to converge
+        result = circuit.solve(5000.0)
+        assert result.success
+
+        final_T = result.temperatures['panel'][-1]
+        assert final_T == pytest.approx(T_eq, rel=1e-3)
+
+    def test_orbital_solve_reasonable_range(self):
+        """Coupled orbital solve produces temperatures in a physically
+        reasonable range (not diverging, not going to zero)."""
+        from missiontools import Spacecraft
+
+        sc = Spacecraft.sunsync(altitude_km=550, node_solar_time='12:00')
+
+        # Use zenith-facing panel (body -z = anti-nadir = toward sun
+        # for noon orbit) to get solar input
+        cfg = NormalVectorThermalConfig(
+            normal_vecs=[[0, 0, -1]],
+            areas=[1.0],
+            emissivities=[0.8],
+            absorptivities=[0.3],
+        )
+        sc.add_thermal_config(cfg)
+
+        circuit = ThermalCircuit()
+        circuit.add_capacitance('panel', 10.0, initial_temp=250.0)
+
+        duration = cfg.attach(
+            circuit,
+            face_nodes=['panel'],
+            t_start=np.datetime64('2025-06-21', 'us'),
+            t_end=np.datetime64('2025-06-21T06:00', 'us'),
+            step=np.timedelta64(30, 's'),
+        )
+        result = circuit.solve(duration)
+        assert result.success
+
+        final_T = result.temperatures['panel'][-1]
+        assert 100 < final_T < 500, f"Final T = {final_T:.1f} K"
+
+
+# ===================================================================
 # Top-level import
 # ===================================================================
 
 def test_top_level_import():
     from missiontools import ThermalCircuit as TC
     assert TC is ThermalCircuit
+
+
+def test_top_level_import_thermal_config():
+    from missiontools import NormalVectorThermalConfig as NTC
+    assert NTC is NormalVectorThermalConfig
