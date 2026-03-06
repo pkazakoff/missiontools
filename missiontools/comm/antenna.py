@@ -261,6 +261,11 @@ class AbstractAntenna(ABC):
 
         return self._pattern_gain(theta)
 
+    @property
+    def peak_gain_dbi(self) -> float:
+        """Peak gain at boresight (dBi)."""
+        return float(self._pattern_gain(np.zeros(1))[0])
+
     @abstractmethod
     def _pattern_gain(
         self,
@@ -314,6 +319,11 @@ class IsotropicAntenna(AbstractAntenna):
         """
         v_arr = np.atleast_2d(np.asarray(v, dtype=np.float64))
         return np.full(v_arr.shape[0], self._gain_dbi)
+
+    @property
+    def peak_gain_dbi(self) -> float:
+        """Peak gain (dBi), constant for isotropic antenna."""
+        return self._gain_dbi
 
     def _pattern_gain(
         self,

@@ -12,14 +12,14 @@ Antenna classes
 :class:`SymmetricAntenna`
     Axially symmetric antenna defined by a gain-vs-angle table.
 
-Planned functionality
----------------------
-- RF link budget (uplink / downlink)
-- Free-space path loss
-- Noise figure and system noise temperature
-- Eb/N0 and link margin
+Link budget
+-----------
+:class:`Link`
+    RF link between two antennas.  Computes link margin via
+    :meth:`~Link.link_margin`.
 """
 
 from .antenna import AbstractAntenna, IsotropicAntenna, SymmetricAntenna
+from .link import Link
 
-__all__ = ['AbstractAntenna', 'IsotropicAntenna', 'SymmetricAntenna']
+__all__ = ['AbstractAntenna', 'IsotropicAntenna', 'SymmetricAntenna', 'Link']

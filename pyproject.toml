@@ -14,6 +14,7 @@ dependencies = [
     "skyfield",
     "pyshp",
     "shapely",
+    "itur",
 ]
 
 [project.optional-dependencies]
