@@ -47,6 +47,51 @@ class GroundStation:
             raise ValueError(
                 f"lat must be in [-90, 90] degrees, got {self.lat}"
             )
+        self._antennas: list = []
+
+    @property
+    def antennas(self) -> list:
+        """Antennas attached to this ground station (read-only copy)."""
+        return list(self._antennas)
+
+    def add_antenna(self, antenna) -> None:
+        """Attach an antenna to this ground station.
+
+        Sets the antenna's back-reference and pre-computes the ECEF
+        boresight for ground-mounted antennas.
+
+        Parameters
+        ----------
+        antenna : AbstractAntenna
+            The antenna to attach.
+
+        Raises
+        ------
+        TypeError
+            If *antenna* is not an
+            :class:`~missiontools.comm.AbstractAntenna`.
+        ValueError
+            If the antenna is already attached to a Spacecraft.
+        """
+        from .comm.antenna import AbstractAntenna
+        if not isinstance(antenna, AbstractAntenna):
+            raise TypeError(
+                f"antenna must be an AbstractAntenna instance, "
+                f"got {type(antenna).__name__!r}"
+            )
+        if antenna._spacecraft is not None:
+            raise ValueError(
+                "Antenna is already attached to a Spacecraft."
+            )
+        antenna._ground_station = self
+        if antenna._mode == 'ground':
+            from .orbit.frames import enu_to_ecef
+            antenna._boresight_ecef = enu_to_ecef(
+                antenna._boresight_enu,
+                np.radians(self.lat),
+                np.radians(self.lon),
+            )
+        self._antennas.append(antenna)
 
     def access(
             self,

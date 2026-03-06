@@ -243,6 +243,68 @@ def lvlh_to_eci(vecs:  npt.NDArray[np.floating],
     return result[0] if scalar else result
 
 
+def azel_to_enu(
+        az_rad: float,
+        el_rad: float,
+) -> npt.NDArray[np.floating]:
+    """Unit direction vector in the ENU frame from azimuth and elevation.
+
+    Parameters
+    ----------
+    az_rad : float
+        Azimuth from north (rad), measured clockwise (east-positive).
+    el_rad : float
+        Elevation from the horizon (rad).
+
+    Returns
+    -------
+    npt.NDArray[np.floating], shape (3,)
+        Unit vector ``[east, north, up]``.
+    """
+    cos_el = np.cos(el_rad)
+    return np.array([
+        np.sin(az_rad) * cos_el,
+        np.cos(az_rad) * cos_el,
+        np.sin(el_rad),
+    ], dtype=np.float64)
+
+
+def enu_to_ecef(
+        vecs: npt.ArrayLike,
+        lat: float,
+        lon: float,
+) -> npt.NDArray[np.floating]:
+    """Rotate vectors from local ENU (East-North-Up) to ECEF.
+
+    Parameters
+    ----------
+    vecs : array_like, shape (3,) or (N, 3)
+        Vectors in the ENU frame at the station location.
+    lat : float
+        Geodetic latitude (rad).
+    lon : float
+        Longitude (rad).
+
+    Returns
+    -------
+    npt.NDArray[np.floating]
+        Vectors in ECEF, same shape as *vecs*.
+    """
+    vecs = np.asarray(vecs, dtype=np.float64)
+    scalar = vecs.ndim == 1
+
+    sl, cl = np.sin(lat), np.cos(lat)
+    sn, cn = np.sin(lon), np.cos(lon)
+
+    # Columns are E-hat, N-hat, U-hat expressed in ECEF
+    R = np.array([[-sn, -sl * cn, cl * cn],
+                  [ cn, -sl * sn, cl * sn],
+                  [ 0.,       cl,      sl]], dtype=np.float64)  # (3, 3)
+
+    result = (R @ np.atleast_2d(vecs).T).T  # (N, 3)
+    return result[0] if scalar else result
+
+
 def sun_vec_eci(
         t: np.datetime64 | npt.NDArray[np.datetime64],
 ) -> npt.NDArray[np.floating]:

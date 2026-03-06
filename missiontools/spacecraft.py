@@ -93,6 +93,7 @@ class Spacecraft:
         self._sensors: list = []
         self._solar_configs: list = []
         self._thermal_configs: list = []
+        self._antennas: list = []
 
     @property
     def attitude_law(self) -> AttitudeLaw:
@@ -173,6 +174,42 @@ class Spacecraft:
             )
         config._spacecraft = self
         self._thermal_configs.append(config)
+
+    @property
+    def antennas(self) -> list:
+        """Antennas attached to this spacecraft (read-only copy)."""
+        return list(self._antennas)
+
+    def add_antenna(self, antenna) -> None:
+        """Attach an antenna to this spacecraft.
+
+        Sets the antenna's back-reference to this spacecraft and appends it
+        to the internal antennas list.
+
+        Parameters
+        ----------
+        antenna : AbstractAntenna
+            The antenna to attach.
+
+        Raises
+        ------
+        TypeError
+            If *antenna* is not an :class:`~missiontools.comm.AbstractAntenna`.
+        ValueError
+            If the antenna is already attached to a GroundStation.
+        """
+        from .comm.antenna import AbstractAntenna
+        if not isinstance(antenna, AbstractAntenna):
+            raise TypeError(
+                f"antenna must be an AbstractAntenna instance, "
+                f"got {type(antenna).__name__!r}"
+            )
+        if antenna._ground_station is not None:
+            raise ValueError(
+                "Antenna is already attached to a GroundStation."
+            )
+        antenna._spacecraft = self
+        self._antennas.append(antenna)
 
     def add_sensor(self, sensor) -> None:
         """Attach a Sensor to this spacecraft.

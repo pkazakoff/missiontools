@@ -83,7 +83,7 @@ Submodules
 :mod:`~missiontools.power`
     Solar power generation modelling.
 :mod:`~missiontools.comm`
-    Link budget analysis *(planned)*.
+    Antenna gain and link budget analysis.
 :mod:`~missiontools.thermal`
     Thermal analysis *(planned)*.
 :mod:`~missiontools.radiation`
@@ -100,4 +100,5 @@ from .sensor import Sensor
 from .coverage_analysis import Coverage
 from .power import AbstractSolarConfig, NormalVectorSolarConfig
 from .thermal import ThermalCircuit, NormalVectorThermalConfig
+from .comm import IsotropicAntenna, SymmetricAntenna
 from .cache import clear_cache, set_cache_limit, cache_info
