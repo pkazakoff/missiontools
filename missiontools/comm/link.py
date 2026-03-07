@@ -264,14 +264,30 @@ class Link:
         r_tx: npt.NDArray,
         r_rx: npt.NDArray,
     ) -> npt.NDArray[np.bool_]:
-        """Return boolean array; True where the central body blocks LOS."""
+        """Return boolean array; True where the central body blocks LOS.
+
+        The blocking sphere radius is capped to just below the minimum
+        geocentric distance of either endpoint.  This is necessary because
+        the Earth is oblate: using the equatorial radius as a sphere would
+        place high-latitude ground stations "inside" the sphere and
+        incorrectly flag all links as blocked.
+        """
         d = r_rx - r_tx  # (N,3)
         r_tx_dot_d = np.einsum('ij,ij->i', r_tx, d)
         d_dot_d = np.einsum('ij,ij->i', d, d)
         t_star = np.clip(-r_tx_dot_d / d_dot_d, 0.0, 1.0)
         closest = r_tx + t_star[:, np.newaxis] * d
         min_dist_sq = np.einsum('ij,ij->i', closest, closest)
-        return min_dist_sq < self._body_radius ** 2
+
+        # Effective blocking radius: no larger than the smaller of the two
+        # endpoint distances (so neither endpoint is ever "inside" the sphere).
+        r_tx_sq = np.einsum('ij,ij->i', r_tx, r_tx)
+        r_rx_sq = np.einsum('ij,ij->i', r_rx, r_rx)
+        block_sq = np.minimum(
+            self._body_radius ** 2,
+            np.minimum(r_tx_sq, r_rx_sq) * (1.0 - 1e-6),
+        )
+        return min_dist_sq < block_sq
 
     def _p618_attenuation(
         self,
