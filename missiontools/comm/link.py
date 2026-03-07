@@ -123,34 +123,42 @@ class Link:
 
     @property
     def tx_power_dbw(self) -> float:
+        """Transmit power (dBW)."""
         return self._tx_power_dbw
 
     @property
     def frequency_hz(self) -> float:
+        """Centre frequency (Hz)."""
         return self._frequency_hz
 
     @property
     def data_rate_bps(self) -> float:
+        """Data rate (bit/s)."""
         return self._data_rate_bps
 
     @property
     def rx_gt_db_k(self) -> float:
+        """Receive system G/T at boresight (dB/K)."""
         return self._rx_gt_db_k
 
     @property
     def required_eb_n0_db(self) -> float:
+        """Required Eb/N0 (dB)."""
         return self._required_eb_n0_db
 
     @property
     def implementation_loss_db(self) -> float:
+        """Implementation loss (dB)."""
         return self._implementation_loss_db
 
     @property
     def misc_losses_db(self) -> float:
+        """Miscellaneous fixed losses (dB)."""
         return self._misc_losses_db
 
     @property
     def use_p618(self) -> bool:
+        """Whether ITU-R P.618 atmospheric attenuation is applied."""
         return self._use_p618
 
     # --- public API ---
@@ -299,6 +307,14 @@ class Link:
         """Return P.618 atmospheric attenuation (dB), shape (N,).
 
         Returns zeros if P.618 is disabled or the link is not SC–GS.
+
+        .. note::
+            The ITU-R P.618 model does not expose a vectorised API.  This
+            method makes N individual scalar calls to ``itur``, one per
+            timestep.  For long time arrays (e.g. 2 880 points at 30 s
+            cadence over 24 h) this loop may be the dominant cost of
+            :meth:`link_margin`.  Consider downsampling or caching results
+            when calling over many identical elevation angles.
         """
         n = len(t_arr)
         if not self._use_p618 or not self._sc_gs_link:

@@ -10,11 +10,11 @@ import numpy.typing as npt
 
 from .aoi import AoI
 from .sensor import Sensor
-from .coverage.coverage import (
-    _make_sensor_spec,
-    _coverage_fraction_multi,
-    _pointwise_coverage_multi,
-    _collect_access_intervals_multi,
+from .coverage import (
+    make_sensor_spec,
+    coverage_fraction_multi,
+    pointwise_coverage_multi,
+    collect_access_intervals_multi,
 )
 
 _DEFAULT_STEP = np.timedelta64(30, 's')
@@ -176,7 +176,7 @@ class Coverage:
                 np.timedelta64(1, 's'),
             )
             r, v, t = state['r'][0], state['v'][0], state['t'][0]
-            specs.append(_make_sensor_spec(
+            specs.append(make_sensor_spec(
                 sc.keplerian_params,
                 sc.propagator_type,
                 sensor.pointing_lvlh(r, v, t),
@@ -228,7 +228,7 @@ class Coverage:
             :func:`~missiontools.coverage.coverage_fraction`.
         """
         sza_max, sza_min = self._sza_rad()
-        return _coverage_fraction_multi(
+        return coverage_fraction_multi(
             self._aoi.lat_rad, self._aoi.lon_rad,
             self._all_sensor_specs(t_start),
             t_start, t_end,
@@ -282,7 +282,7 @@ class Coverage:
         lon = self._aoi.lon_rad
         M   = len(lat)
 
-        intervals = _collect_access_intervals_multi(
+        intervals = collect_access_intervals_multi(
             lat, lon,
             self._all_sensor_specs(t_start),
             t_start, t_end,
@@ -342,7 +342,7 @@ class Coverage:
             :func:`~missiontools.coverage.pointwise_coverage`.
         """
         sza_max, sza_min = self._sza_rad()
-        return _pointwise_coverage_multi(
+        return pointwise_coverage_multi(
             self._aoi.lat_rad, self._aoi.lon_rad,
             self._all_sensor_specs(t_start),
             t_start, t_end,
@@ -382,7 +382,7 @@ class Coverage:
             See :func:`~missiontools.coverage.access_pointwise`.
         """
         sza_max, sza_min = self._sza_rad()
-        return _collect_access_intervals_multi(
+        return collect_access_intervals_multi(
             self._aoi.lat_rad, self._aoi.lon_rad,
             self._all_sensor_specs(t_start),
             t_start, t_end,
@@ -423,7 +423,7 @@ class Coverage:
             point *m*.  See :func:`~missiontools.coverage.revisit_pointwise`.
         """
         sza_max, sza_min = self._sza_rad()
-        intervals = _collect_access_intervals_multi(
+        intervals = collect_access_intervals_multi(
             self._aoi.lat_rad, self._aoi.lon_rad,
             self._all_sensor_specs(t_start),
             t_start, t_end,

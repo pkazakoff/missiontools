@@ -187,8 +187,24 @@ _NADIR_Q = np.array([-0.5, 0.5, 0.5, -0.5])
 class AttitudeLaw:
     """Spacecraft/sensor pointing law with full quaternion internal storage.
 
-    Do not construct directly — use the factory classmethods:
-    :meth:`fixed`, :meth:`track`, :meth:`nadir`.
+    Prefer the factory classmethods :meth:`fixed`, :meth:`track`, and
+    :meth:`nadir` for typical usage.  The constructor is public and may be
+    called directly by power users or subclasses.
+
+    Parameters
+    ----------
+    mode : str
+        Pointing mode: ``'fixed'`` or ``'track'``.
+    q : ndarray of shape (4,), optional
+        Unit quaternion ``[w, x, y, z]`` defining the body orientation in the
+        reference frame.  Required for ``mode='fixed'``.
+    frame : str, optional
+        Reference frame for the quaternion: ``'lvlh'``, ``'eci'``, or
+        ``'ecef'``.  Required for ``mode='fixed'``.
+    target : Spacecraft, optional
+        Target spacecraft to track.  Required for ``mode='track'``.
+    roll : float, optional
+        Roll angle (rad) about the boresight axis.  Default 0.
 
     Boresight convention
     --------------------

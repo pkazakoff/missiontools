@@ -99,7 +99,7 @@ class GroundStation:
             t_start:  np.datetime64,
             t_end:    np.datetime64,
             el_min:   float = 0.0,
-            step:     np.timedelta64 = np.timedelta64(30, 's'),
+            max_step: np.timedelta64 = np.timedelta64(30, 's'),
     ) -> list[tuple[np.datetime64, np.datetime64]]:
         """Compute access intervals between this ground station and a spacecraft.
 
@@ -114,8 +114,8 @@ class GroundStation:
         el_min : float, optional
             Minimum elevation angle (deg).  Contacts below this elevation
             are not reported.  Default 0.
-        step : np.timedelta64, optional
-            Coarse scan time step used internally.  Smaller values improve
+        max_step : np.timedelta64, optional
+            Maximum coarse scan step used internally.  Smaller values improve
             detection of very short passes at the cost of runtime.
             Default 30 s.
 
@@ -135,5 +135,5 @@ class GroundStation:
             alt              = self.alt,
             el_min           = np.radians(el_min),
             propagator_type  = spacecraft.propagator_type,
-            max_step         = step,
+            max_step         = max_step,
         )

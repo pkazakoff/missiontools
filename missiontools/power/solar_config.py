@@ -290,20 +290,15 @@ class NormalVectorSolarConfig(AbstractSolarConfig):
         n_samples = 360
         thetas = np.linspace(0, 2 * np.pi, n_samples, endpoint=False)
 
-        best_theta = 0.0
-        best_proj = -np.inf
+        # Candidate sun-direction vectors: (n_samples, 3)
+        # Sun comes FROM -d, so contribution = max(-d · normal, 0)
+        d = np.outer(np.cos(thetas), u) + np.outer(np.sin(thetas), v)  # (S, 3)
+        # dot[s, m] = (-d[s]) · normal[m] = -d[s] @ normals.T
+        dots = -d @ self._normals.T                                      # (S, M)
+        # Weighted sum: (S, M) clipped × areas (M,) → (S,)
+        total = np.maximum(dots, 0.0) @ self._areas                     # (S,)
 
-        for theta in thetas:
-            d = np.cos(theta) * u + np.sin(theta) * v
-            # Sun comes FROM -d, so panel contribution is max((-d) · n, 0)
-            total = 0.0
-            for normal, area in zip(self._normals, self._areas):
-                total += area * max(float(np.dot(-d, normal)), 0.0)
-            if total > best_proj:
-                best_proj = total
-                best_theta = theta
-
-        return float(best_theta)
+        return float(thetas[np.argmax(total)])
 
     def oap(self, start_time: np.datetime64 | None = None) -> float:
         """Orbit-average power over one orbital period.

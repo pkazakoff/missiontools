@@ -125,7 +125,7 @@ class TestGroundStationAccess:
             max_step         = np.timedelta64(30, 's'),
         )
         result = _GS.access(_SC, _EPOCH, _T_END, el_min=5.0,
-                            step=np.timedelta64(30, 's'))
+                            max_step=np.timedelta64(30, 's'))
         assert len(result) == len(expected)
         for (rs, re), (es, ee) in zip(result, expected):
             assert rs == es
@@ -133,7 +133,7 @@ class TestGroundStationAccess:
 
     def test_custom_step_accepted(self):
         result = _GS.access(_SC, _EPOCH, _T_END,
-                            step=np.timedelta64(60, 's'))
+                            max_step=np.timedelta64(60, 's'))
         assert isinstance(result, list)
 
     def test_j2_propagator_via_spacecraft(self):

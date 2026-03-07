@@ -337,9 +337,19 @@ def space_to_space_access(
     .. note::
         A spherical obstruction model is used.  The maximum error relative to
         the WGS84 ellipsoid is ≤ 21 km (< 0.4 % of a typical orbit radius),
-        which is negligible for link-budget analysis.  To be conservative near
-        the poles, pass ``body_radius=EARTH_SEMI_MAJOR_AXIS``; for the most
-        representative radius use the default ``EARTH_MEAN_RADIUS``.
+        which is negligible for access analysis.
+
+        **Choosing** ``body_radius``:
+
+        - ``EARTH_MEAN_RADIUS`` (default, 6 371 008 m) — best representative
+          average; minimises neither false positives nor false negatives.
+        - ``EARTH_SEMI_MAJOR_AXIS`` (6 378 137 m) — *conservative* for
+          equatorial and mid-latitude paths.  A larger sphere is more likely
+          to flag LOS as blocked near the Earth's limb, so this choice
+          under-reports access (safe side for link planning).
+        - A smaller radius such as ``EARTH_SEMI_MINOR_AXIS`` — conservative
+          in the opposite direction; may slightly over-report access near the
+          poles.
 
     Parameters
     ----------
