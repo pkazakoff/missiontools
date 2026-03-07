@@ -463,7 +463,7 @@ class AttitudeLaw:
         else:  # 'track'
             r_tgt, _ = propagate_analytical(
                 t_arr, **self._target.keplerian_params,
-                type=self._target.propagator_type,
+                propagator_type=self._target.propagator_type,
             )
             vecs = r_tgt - r_2d
 
@@ -593,7 +593,7 @@ class AttitudeLaw:
         else:  # 'track'
             r_tgt, _ = propagate_analytical(
                 t_arr, **self._target.keplerian_params,
-                type=self._target.propagator_type,
+                propagator_type=self._target.propagator_type,
             )
             d    = r_tgt - r_2d
             d    = d / np.linalg.norm(d, axis=1, keepdims=True)  # (N, 3) unit

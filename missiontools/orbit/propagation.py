@@ -61,7 +61,7 @@ def propagate_analytical(t: list[datetime] | npt.NDArray[np.datetime64],
                          arg_p: float | np.floating,
                          raan: float | np.floating,
                          ma: float | np.floating,
-                         type: str = "twobody",
+                         propagator_type: str = "twobody",
                          central_body_mu: float | np.floating = EARTH_MU,
                          central_body_j2: float | np.floating = EARTH_J2,
                          central_body_radius: float | np.floating = EARTH_MEAN_RADIUS) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
@@ -91,7 +91,7 @@ def propagate_analytical(t: list[datetime] | npt.NDArray[np.datetime64],
         Right ascension of the ascending node (rad).
     ma : float | np.floating
         Mean anomaly at epoch (rad).
-    type : str, optional
+    propagator_type : str, optional
         Propagation model to use. ``"twobody"`` (default) uses unperturbed
         Keplerian motion. ``"j2"`` incorporates mean J2 perturbations
     central_body_mu : float | np.floating, optional
@@ -99,7 +99,7 @@ def propagate_analytical(t: list[datetime] | npt.NDArray[np.datetime64],
         Defaults to ``EARTH_MU``.
     central_body_j2 : float | np.floating, optional
         J2 perturbation parameter of the central body (m⁵/s²), defined as
-        :math:`\\mu J_2 R^2`.  Only used when ``type`` is ``"j2"``.
+        :math:`\\mu J_2 R^2`.  Only used when ``propagator_type`` is ``"j2"``.
         Defaults to ``EARTH_J2``.
     central_body_radius : float | np.floating, optional
         Equatorial radius of the central body (m).  Accepted for API
@@ -120,9 +120,6 @@ def propagate_analytical(t: list[datetime] | npt.NDArray[np.datetime64],
         raise ValueError(f"Eccentricity must satisfy 0 <= e < 1 for elliptical orbits, got e={e}")
     if not (0 <= i <= np.pi):
         raise ValueError(f"Inclination must be in [0, π], got i={i}")
-    for name, val in (("arg_p", arg_p), ("raan", raan), ("ma", ma)):
-        if not (0 <= val < 2*np.pi):
-            raise ValueError(f"Angle '{name}' must be in [0, 2π), got {name}={val}")
     if central_body_mu <= 0:
         raise ValueError(f"central_body_mu must be positive, got central_body_mu={central_body_mu}")
     
@@ -138,7 +135,7 @@ def propagate_analytical(t: list[datetime] | npt.NDArray[np.datetime64],
     # compute semi-latus rectum
     p = a*(1-e**2)
 
-    if type == "j2":
+    if propagator_type == "j2":
         # compute secular J2 terms
         # central_body_j2 = mu * J2_dim * R^2, so dividing by mu gives J2_dim * R^2 (m^2),
         # the quantity that appears in the Vallado secular rate formulas.
@@ -196,7 +193,7 @@ def propagate_analytical(t: list[datetime] | npt.NDArray[np.datetime64],
                                                      np.sqrt(1-e**2)*np.cos(E),
                                                      np.repeat(0.0, E.shape[0])])
 
-    if type == "twobody":
+    if propagator_type == "twobody":
         # since rotations are static over time for two body,
         # fastest way to implement for large number of times
         # is construct a single combined rotation matrix

@@ -33,7 +33,7 @@ def _make_sc():
 def _subsat_latlon_at_epoch(sc):
     """Return (lat_deg, lon_deg) of the sub-satellite point at _EPOCH."""
     r_eci, _ = propagate_analytical(
-        np.atleast_1d(_EPOCH), **sc.keplerian_params, type=sc.propagator_type
+        np.atleast_1d(_EPOCH), **sc.keplerian_params, propagator_type=sc.propagator_type
     )
     r_ecef = eci_to_ecef(r_eci, np.atleast_1d(_EPOCH))
     x, y, z = r_ecef[0]
@@ -53,7 +53,7 @@ def _aligned_sc_gs():
 def _compute_range_at_epoch(sc, gs):
     """Range from SC to GS at _EPOCH (m)."""
     r_sc, _ = propagate_analytical(
-        np.atleast_1d(_EPOCH), **sc.keplerian_params, type=sc.propagator_type
+        np.atleast_1d(_EPOCH), **sc.keplerian_params, propagator_type=sc.propagator_type
     )
     r_gs_ecef = geodetic_to_ecef(np.radians(gs.lat), np.radians(gs.lon), gs.alt)
     r_gs_eci = ecef_to_eci(np.atleast_2d(r_gs_ecef), np.atleast_1d(_EPOCH))

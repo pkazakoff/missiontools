@@ -156,12 +156,6 @@ _BASE = dict(
     ({"e": 1.0},               "Eccentricity"),
     ({"i": -0.1},              "Inclination"),
     ({"i": np.pi + 0.1},       "Inclination"),
-    ({"arg_p": -0.1},          "arg_p"),
-    ({"arg_p": 2 * np.pi},     "arg_p"),
-    ({"raan": -0.1},           "raan"),
-    ({"raan": 2 * np.pi},      "raan"),
-    ({"ma": -0.1},             "ma"),
-    ({"ma": 2 * np.pi},        "ma"),
     ({"central_body_mu": 0.0}, "central_body_mu"),
     ({"central_body_mu":-1.0}, "central_body_mu"),
 ])
@@ -169,6 +163,21 @@ def test_input_validation_raises(override, match):
     kwargs = {**_BASE, **override}
     with pytest.raises(ValueError, match=match):
         propagate_analytical([EPOCH], **kwargs)
+
+
+@pytest.mark.parametrize("override", [
+    {"arg_p": -0.1},
+    {"arg_p": 2 * np.pi},
+    {"raan": -0.5},
+    {"raan": 2 * np.pi},
+    {"ma": -0.1},
+    {"ma": 2 * np.pi},
+])
+def test_unbounded_angles_accepted(override):
+    """Negative and out-of-[0,2π) angles must not raise — propagator wraps internally."""
+    kwargs = {**_BASE, **override}
+    r, v = propagate_analytical([EPOCH], **kwargs)
+    assert r.shape == (1, 3)
 
 
 # ===========================================================================
@@ -457,7 +466,7 @@ class TestGeostationary:
         """Propagating at epoch → ECEF longitude must equal the input."""
         r = _geo()
         t = np.array([_GEO_EPOCH])
-        r_eci, _ = propagate_analytical(t, **r, type='twobody')
+        r_eci, _ = propagate_analytical(t, **r, propagator_type='twobody')
         r_ecef   = eci_to_ecef(r_eci, t)
         lon_deg  = np.degrees(np.arctan2(r_ecef[0, 1], r_ecef[0, 0]))
         np.testing.assert_allclose(lon_deg, _GEO_LON, atol=0.01)
@@ -475,7 +484,7 @@ class TestGeostationary:
     def test_propagates_without_error(self):
         r = _geo()
         t = np.array([_GEO_EPOCH, _GEO_EPOCH + np.timedelta64(3600, 's')])
-        pos, vel = propagate_analytical(t, **r, type='twobody')
+        pos, vel = propagate_analytical(t, **r, propagator_type='twobody')
         assert pos.shape == (2, 3)
         assert vel.shape == (2, 3)
 
@@ -532,7 +541,7 @@ class TestHEO:
         """At the first apogee, ECEF longitude must match the requested value."""
         r      = _heo()
         T_apo  = _first_apogee(r, _HEO_PERIOD)
-        r_eci, _ = propagate_analytical(np.array([T_apo]), **r, type='twobody')
+        r_eci, _ = propagate_analytical(np.array([T_apo]), **r, propagator_type='twobody')
         r_ecef   = eci_to_ecef(r_eci, np.array([T_apo]))
         lon_deg  = np.degrees(np.arctan2(r_ecef[0, 1], r_ecef[0, 0]))
         np.testing.assert_allclose(lon_deg, _HEO_LON, atol=0.01)
@@ -552,7 +561,7 @@ class TestHEO:
     def test_propagates_without_error(self):
         r = _heo()
         t = np.array([_HEO_EPOCH, _HEO_EPOCH + np.timedelta64(3600, 's')])
-        pos, vel = propagate_analytical(t, **r, type='twobody')
+        pos, vel = propagate_analytical(t, **r, propagator_type='twobody')
         assert pos.shape == (2, 3)
 
     def test_invalid_eccentricity_zero(self):

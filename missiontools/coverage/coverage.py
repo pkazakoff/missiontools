@@ -131,7 +131,7 @@ def _compute_vis_batch_multi(
     vis = np.zeros((T, M), dtype=np.bool_)
 
     for kp, prop_type, use_fov, pointing_norm, cos_fov in sensor_specs:
-        r, v    = cached_propagate_analytical(t_batch, **kp, type=prop_type)
+        r, v    = cached_propagate_analytical(t_batch, **kp, propagator_type=prop_type)
         pt_ecef = (_pointing_ecef(pointing_norm, r, v, t_batch)
                    if use_fov else None)
         vis |= _visibility(r, t_batch, gs_ecef, up, sin_el_min,

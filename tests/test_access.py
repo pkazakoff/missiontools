@@ -366,7 +366,7 @@ def _state_at_epoch(params):
     """Propagate a single point at the epoch and return (r, v)."""
     from missiontools.orbit.propagation import propagate_analytical
     t = np.array([params['epoch']])
-    r, v = propagate_analytical(t, **params, type='twobody')
+    r, v = propagate_analytical(t, **params, propagator_type='twobody')
     return r, v
 
 
@@ -411,8 +411,8 @@ class TestSpaceToSpaceAccess:
         """(N, 3) inputs should return shape (N,) bool array."""
         from missiontools.orbit.propagation import propagate_analytical
         t = _T_START + np.arange(5) * np.timedelta64(60, 's')
-        r1, _ = propagate_analytical(t, **_SC1, type='twobody')
-        r2, _ = propagate_analytical(t, **_SC2, type='twobody')
+        r1, _ = propagate_analytical(t, **_SC1, propagator_type='twobody')
+        r2, _ = propagate_analytical(t, **_SC2, propagator_type='twobody')
         result = space_to_space_access(r1, r2)
         assert result.shape == (5,)
         assert result.dtype == np.bool_
@@ -427,8 +427,8 @@ class TestSpaceToSpaceAccess:
         """s2s(r1, r2) == s2s(r2, r1) for all timesteps."""
         from missiontools.orbit.propagation import propagate_analytical
         t = _T_START + np.arange(10) * np.timedelta64(300, 's')
-        r1, _ = propagate_analytical(t, **_SC1, type='twobody')
-        r2, _ = propagate_analytical(t, **_SC2, type='twobody')
+        r1, _ = propagate_analytical(t, **_SC1, propagator_type='twobody')
+        r2, _ = propagate_analytical(t, **_SC2, propagator_type='twobody')
         np.testing.assert_array_equal(space_to_space_access(r1, r2),
                                       space_to_space_access(r2, r1))
 
@@ -495,6 +495,7 @@ class TestSpaceToSpaceAccessIntervals:
 
     def test_j2_propagator(self):
         result = space_to_space_access_intervals(
-            _T_START, _T_END, _SC1, _SC4, propagator_type='j2')
+            _T_START, _T_END, _SC1, _SC4,
+            propagator_type_1='j2', propagator_type_2='j2')
         assert isinstance(result, list)
         assert len(result) >= 1

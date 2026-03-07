@@ -244,7 +244,7 @@ class Link:
 
         if isinstance(host, Spacecraft):
             r, v = propagate_analytical(
-                t_arr, **host.keplerian_params, type=host.propagator_type
+                t_arr, **host.keplerian_params, propagator_type=host.propagator_type
             )
             return r, v
         elif isinstance(host, GroundStation):

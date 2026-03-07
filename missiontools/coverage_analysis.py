@@ -37,10 +37,11 @@ class Coverage:
     ----------
     aoi : AoI
         Area of interest containing ground sample points.
-    sensors : list[Sensor]
-        One or more :class:`~missiontools.Sensor` instances.  All sensors
-        must be attached to a spacecraft.  Sensors may belong to the same
-        spacecraft (multi-FOV) or to different spacecraft (constellation).
+    sensors : sequence of Sensor
+        One or more :class:`~missiontools.Sensor` instances (list, tuple, or
+        any iterable).  All sensors must be attached to a spacecraft.  Sensors
+        may belong to the same spacecraft (multi-FOV) or to different
+        spacecraft (constellation).
     el_min_deg : float, optional
         Minimum ground elevation angle (degrees) for a ground point to be
         considered in view.  Default 0 (horizon).
@@ -113,8 +114,9 @@ class Coverage:
             )
 
         # --- validate sensors -----------------------------------------------
-        if not isinstance(sensors, list) or len(sensors) == 0:
-            raise ValueError("sensors must be a non-empty list of Sensor objects")
+        sensors = list(sensors)
+        if len(sensors) == 0:
+            raise ValueError("sensors must be a non-empty sequence of Sensor objects")
         for s in sensors:
             if not isinstance(s, Sensor):
                 raise TypeError(

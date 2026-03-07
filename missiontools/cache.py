@@ -108,7 +108,7 @@ def _make_propagation_key(
     arg_p: float,
     raan: float,
     ma: float,
-    type: str,
+    propagator_type: str,
     central_body_mu: float,
     central_body_j2: float,
 ) -> tuple:
@@ -120,7 +120,7 @@ def _make_propagation_key(
         epoch_us,
         float(a), float(e), float(i),
         float(arg_p), float(raan), float(ma),
-        type,
+        propagator_type,
         float(central_body_mu), float(central_body_j2),
     )
 
@@ -130,7 +130,7 @@ _propagation_cache = SizeAwareLRU()
 
 
 def cached_propagate_analytical(t, *, epoch, a, e, i, arg_p, raan, ma,
-                                 type="twobody",
+                                 propagator_type="twobody",
                                  central_body_mu=EARTH_MU,
                                  central_body_j2=EARTH_J2,
                                  central_body_radius=None,
@@ -148,14 +148,15 @@ def cached_propagate_analytical(t, *, epoch, a, e, i, arg_p, raan, ma,
     from .orbit.propagation import propagate_analytical
 
     key = _make_propagation_key(t, epoch, a, e, i, arg_p, raan, ma,
-                                type, central_body_mu, central_body_j2)
+                                propagator_type, central_body_mu, central_body_j2)
     cached = _cache.get(key)
     if cached is not None:
         return cached
 
     r, v = propagate_analytical(t, epoch=epoch, a=a, e=e, i=i,
                                  arg_p=arg_p, raan=raan, ma=ma,
-                                 type=type, central_body_mu=central_body_mu,
+                                 propagator_type=propagator_type,
+                                 central_body_mu=central_body_mu,
                                  central_body_j2=central_body_j2)
     nbytes = r.nbytes + v.nbytes
     _cache.put(key, (r, v), nbytes)

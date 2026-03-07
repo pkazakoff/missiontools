@@ -130,20 +130,20 @@ class TestCachedPropagation:
         clear_cache()
 
     def test_cached_matches_uncached(self):
-        r_ref, v_ref = propagate_analytical(_T, **_KP, type='twobody')
+        r_ref, v_ref = propagate_analytical(_T, **_KP, propagator_type='twobody')
         r_cached, v_cached = cached_propagate_analytical(
-            _T, **_KP, type='twobody')
+            _T, **_KP, propagator_type='twobody')
         np.testing.assert_array_equal(r_ref, r_cached)
         np.testing.assert_array_equal(v_ref, v_cached)
 
     def test_second_call_is_cache_hit(self):
         clear_cache()
-        cached_propagate_analytical(_T, **_KP, type='twobody')
+        cached_propagate_analytical(_T, **_KP, propagator_type='twobody')
         info1 = cache_info()
         assert info1['misses'] == 1
         assert info1['hits'] == 0
 
-        cached_propagate_analytical(_T, **_KP, type='twobody')
+        cached_propagate_analytical(_T, **_KP, propagator_type='twobody')
         info2 = cache_info()
         assert info2['hits'] == 1
         assert info2['misses'] == 1
@@ -151,36 +151,36 @@ class TestCachedPropagation:
     def test_different_times_are_different_keys(self):
         clear_cache()
         t2 = _T[:30]
-        cached_propagate_analytical(_T, **_KP, type='twobody')
-        cached_propagate_analytical(t2, **_KP, type='twobody')
+        cached_propagate_analytical(_T, **_KP, propagator_type='twobody')
+        cached_propagate_analytical(t2, **_KP, propagator_type='twobody')
         info = cache_info()
         assert info['misses'] == 2
         assert info['entries'] == 2
 
     def test_j2_cached_matches_uncached(self):
-        r_ref, v_ref = propagate_analytical(_T, **_KP, type='j2')
+        r_ref, v_ref = propagate_analytical(_T, **_KP, propagator_type='j2')
         r_cached, v_cached = cached_propagate_analytical(
-            _T, **_KP, type='j2')
+            _T, **_KP, propagator_type='j2')
         np.testing.assert_array_equal(r_ref, r_cached)
         np.testing.assert_array_equal(v_ref, v_cached)
 
     def test_cache_info_reports_bytes(self):
         clear_cache()
-        cached_propagate_analytical(_T, **_KP, type='twobody')
+        cached_propagate_analytical(_T, **_KP, propagator_type='twobody')
         info = cache_info()
         # r and v are both (N, 3) float64 = N * 3 * 8 bytes each
         expected = 2 * len(_T) * 3 * 8
         assert info['total_bytes'] == expected
 
     def test_clear_cache(self):
-        cached_propagate_analytical(_T, **_KP, type='twobody')
+        cached_propagate_analytical(_T, **_KP, propagator_type='twobody')
         clear_cache()
         info = cache_info()
         assert info['entries'] == 0
         assert info['total_bytes'] == 0
 
     def test_set_cache_limit(self):
-        cached_propagate_analytical(_T, **_KP, type='twobody')
+        cached_propagate_analytical(_T, **_KP, propagator_type='twobody')
         set_cache_limit(1)  # 1 byte — should evict everything
         info = cache_info()
         assert info['entries'] == 0
@@ -190,5 +190,5 @@ class TestCachedPropagation:
     def test_keplerian_params_dict_unpacking(self):
         """cached_propagate_analytical should accept and ignore central_body_radius."""
         kp_with_radius = {**_KP, 'central_body_radius': 6_371_000.0}
-        r, v = cached_propagate_analytical(_T, **kp_with_radius, type='twobody')
+        r, v = cached_propagate_analytical(_T, **kp_with_radius, propagator_type='twobody')
         assert r.shape == (len(_T), 3)

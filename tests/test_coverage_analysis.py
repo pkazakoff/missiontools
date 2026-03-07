@@ -59,10 +59,15 @@ class TestCoverageConstruct:
         with pytest.raises(TypeError, match='AoI'):
             Coverage('not_an_aoi', [s])
 
-    def test_sensors_not_a_list_raises(self):
+    def test_sensors_not_iterable_raises(self):
         s = _attached_sensor()
-        with pytest.raises(ValueError, match='non-empty'):
-            Coverage(_aoi(), s)   # bare Sensor, not a list
+        with pytest.raises(TypeError):
+            Coverage(_aoi(), s)   # bare Sensor, not iterable
+
+    def test_sensors_tuple_accepted(self):
+        s = _attached_sensor()
+        cov = Coverage(_aoi(), (s,))  # tuple should be accepted
+        assert len(cov.sensors) == 1
 
     def test_sensors_empty_list_raises(self):
         with pytest.raises(ValueError, match='non-empty'):

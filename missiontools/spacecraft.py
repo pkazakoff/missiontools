@@ -336,7 +336,7 @@ class Spacecraft:
 
         t    = t_start + offs.astype('timedelta64[us]')
         r, v = propagate_analytical(t, **self.keplerian_params,
-                                    type=self.propagator_type)
+                                    propagator_type=self.propagator_type)
         return {'t': t, 'r': r, 'v': v}
 
     # ------------------------------------------------------------------

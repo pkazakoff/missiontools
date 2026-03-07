@@ -148,7 +148,7 @@ class TestFunctionalCompatibility:
     def test_compatible_with_propagate_analytical_j2(self):
         sc = Spacecraft(**_KW, propagator_type='j2')
         t  = np.array([_EPOCH, _EPOCH + np.timedelta64(90 * 60, 's')])
-        r, v = propagate_analytical(t, **sc.keplerian_params, type=sc.propagator_type)
+        r, v = propagate_analytical(t, **sc.keplerian_params, propagator_type=sc.propagator_type)
         assert r.shape == (2, 3)
 
     def test_from_dict_with_sun_synchronous_orbit(self):

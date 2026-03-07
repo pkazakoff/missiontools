@@ -25,7 +25,7 @@ _SC_KW = dict(
 
 def _orbit_state(t=_T2):
     """Return (r, v, t) for a circular test orbit."""
-    r, v = propagate_analytical(t, **_SC_KW, type='twobody')
+    r, v = propagate_analytical(t, **_SC_KW, propagator_type='twobody')
     return r, v, t
 
 
@@ -198,7 +198,7 @@ class TestAttitudeLawTrack:
 
         # Manually compute expected direction
         r_tgt, _ = propagate_analytical(t, **target.keplerian_params,
-                                        type='twobody')
+                                        propagator_type='twobody')
         diff = r_tgt - r
         expected = diff / np.linalg.norm(diff, axis=1, keepdims=True)
         np.testing.assert_allclose(p_eci, expected, atol=1e-12)
