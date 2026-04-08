@@ -302,3 +302,104 @@ class TestYawSteering:
         steered = law.rotate_from_body([1, 0, 0], r, v, t)
         # Should differ
         assert not np.allclose(static, steered, atol=1e-6)
+
+
+# ===========================================================================
+# Custom attitude law
+# ===========================================================================
+
+def _identity_cb(t, r_eci, v_eci):
+    """Callback that returns identity quaternions (body frame = ECI frame)."""
+    N = len(t)
+    q = np.zeros((N, 4))
+    q[:, 0] = 1.0
+    return q
+
+
+def _nadir_equiv_cb(t, r_eci, v_eci):
+    """Callback that mimics nadir pointing: body-z = -r_hat in ECI."""
+    from missiontools.attitude.attitude_law import _q_from_vec_batch
+    nadir = -r_eci / np.linalg.norm(r_eci, axis=1, keepdims=True)
+    return _q_from_vec_batch(nadir)
+
+
+class TestAttitudeLawCustom:
+
+    def test_classmethod_stores_callback(self):
+        law = AttitudeLaw.custom(_identity_cb)
+        assert law._mode == 'custom'
+        assert law._callback is _identity_cb
+
+    def test_non_callable_raises_type_error(self):
+        with pytest.raises(TypeError, match="callable"):
+            AttitudeLaw.custom("not_a_function")
+
+    def test_pointing_eci_identity_returns_body_z(self):
+        """Identity quaternions → boresight is always ECI body-z [0,0,1]."""
+        law = AttitudeLaw.custom(_identity_cb)
+        r, v, t = _orbit_state()
+        p = law.pointing_eci(r, v, t)
+        np.testing.assert_allclose(p, np.tile([0., 0., 1.], (len(t), 1)), atol=1e-12)
+
+    def test_pointing_eci_returns_unit_vectors(self):
+        law = AttitudeLaw.custom(_nadir_equiv_cb)
+        r, v, t = _orbit_state()
+        p = law.pointing_eci(r, v, t)
+        norms = np.linalg.norm(p, axis=1)
+        np.testing.assert_allclose(norms, np.ones(len(t)), atol=1e-12)
+
+    def test_rotate_from_body_identity_preserves_vector(self):
+        """Identity quaternions → body-x stays ECI x-axis."""
+        law = AttitudeLaw.custom(_identity_cb)
+        r, v, t = _orbit_state()
+        p = law.rotate_from_body([1., 0., 0.], r, v, t)
+        np.testing.assert_allclose(p, np.tile([1., 0., 0.], (len(t), 1)), atol=1e-12)
+
+    def test_rotate_from_body_z_matches_pointing_eci(self):
+        """rotate_from_body([0,0,1]) must equal pointing_eci for any callback."""
+        law = AttitudeLaw.custom(_nadir_equiv_cb)
+        r, v, t = _orbit_state()
+        boresight_via_pointing = law.pointing_eci(r, v, t)
+        boresight_via_rotate   = law.rotate_from_body([0., 0., 1.], r, v, t)
+        np.testing.assert_allclose(boresight_via_rotate, boresight_via_pointing, atol=1e-12)
+
+    def test_callback_receives_correct_shapes(self):
+        received = {}
+
+        def recording_cb(t, r_eci, v_eci):
+            received['t_shape'] = t.shape
+            received['r_shape'] = r_eci.shape
+            received['v_shape'] = v_eci.shape
+            N = len(t)
+            q = np.zeros((N, 4))
+            q[:, 0] = 1.0
+            return q
+
+        law = AttitudeLaw.custom(recording_cb)
+        r, v, t = _orbit_state()   # N=2
+        law.pointing_eci(r, v, t)
+        assert received['t_shape'] == (2,)
+        assert received['r_shape'] == (2, 3)
+        assert received['v_shape'] == (2, 3)
+
+    def test_scalar_input_returns_1d(self):
+        """Single-timestep (scalar) inputs must return (3,) shaped outputs."""
+        law = AttitudeLaw.custom(_identity_cb)
+        r, v, t = _orbit_state(_T2[:1])
+        p_eci  = law.pointing_eci(r[0], v[0], t[0])
+        p_rot  = law.rotate_from_body([0., 1., 0.], r[0], v[0], t[0])
+        assert p_eci.shape == (3,)
+        assert p_rot.shape == (3,)
+
+    def test_yaw_steering_raises_not_implemented(self):
+        from missiontools import NormalVectorSolarConfig
+        law = AttitudeLaw.custom(_identity_cb)
+        cfg = NormalVectorSolarConfig(normal_vecs=[[1, 0, 0]], areas=[1.0], efficiency=0.3)
+        with pytest.raises(NotImplementedError):
+            law.yaw_steering(cfg)
+
+    def test_repr_contains_mode_and_callback_name(self):
+        law = AttitudeLaw.custom(_identity_cb)
+        r = repr(law)
+        assert "custom" in r
+        assert "_identity_cb" in r

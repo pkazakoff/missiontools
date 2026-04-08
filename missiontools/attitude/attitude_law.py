@@ -244,12 +244,14 @@ class AttitudeLaw:
                  q: npt.NDArray | None = None,
                  frame: str | None = None,
                  target=None,
-                 roll: float = 0.0):
-        self._mode   = mode    # 'fixed' | 'track'
-        self._q      = q       # (4,) unit ndarray [w,x,y,z], or None
-        self._frame  = frame   # 'lvlh' | 'eci' | 'ecef', or None
-        self._target = target  # Spacecraft, or None
-        self._roll   = roll    # roll about boresight for 'track' mode
+                 roll: float = 0.0,
+                 callback=None):
+        self._mode     = mode      # 'fixed' | 'track' | 'custom'
+        self._q        = q         # (4,) unit ndarray [w,x,y,z], or None
+        self._frame    = frame     # 'lvlh' | 'eci' | 'ecef', or None
+        self._target   = target    # Spacecraft, or None
+        self._roll     = roll      # roll about boresight for 'track' mode
+        self._callback = callback  # callable(t, r_eci, v_eci) -> (N,4), or None
         # Pre-compute boresight direction in the reference frame for 'fixed'
         self._pointing_in_ref = _q_boresight(q) if q is not None else None
         # Yaw steering state
@@ -345,6 +347,52 @@ class AttitudeLaw:
             q = _q_compose(_NADIR_Q, q_roll)
         return cls('fixed', q=q, frame='lvlh')
 
+    @classmethod
+    def custom(cls, callback) -> AttitudeLaw:
+        """Custom attitude law defined by a user-supplied callback.
+
+        The callback receives the spacecraft state at each timestep and returns
+        full 3-DOF body attitude quaternions in ECI, giving complete control
+        over pointing.
+
+        Parameters
+        ----------
+        callback : callable
+            A function with signature::
+
+                callback(t, r_eci, v_eci) -> quaternions
+
+            where:
+
+            * ``t``     — ``(N,)`` array of ``datetime64[us]`` time instants
+            * ``r_eci`` — ``(N, 3)`` ECI position array (m)
+            * ``v_eci`` — ``(N, 3)`` ECI velocity array (m s⁻¹)
+            * returns   — ``(N, 4)`` array of unit quaternions ``[w, x, y, z]``
+              defining body attitude in ECI
+
+        Raises
+        ------
+        TypeError
+            If ``callback`` is not callable.
+
+        Examples
+        --------
+        ::
+
+            def my_attitude(t, r_eci, v_eci):
+                N = len(t)
+                q = np.zeros((N, 4))
+                q[:, 0] = 1.0  # identity: body frame aligned with ECI
+                return q
+
+            law = AttitudeLaw.custom(my_attitude)
+        """
+        if not callable(callback):
+            raise TypeError(
+                f"callback must be callable, got {type(callback).__name__!r}"
+            )
+        return cls('custom', callback=callback)
+
     # ------------------------------------------------------------------
     # Yaw steering
     # ------------------------------------------------------------------
@@ -373,6 +421,12 @@ class AttitudeLaw:
             self._solar_config = None
             self._yaw_opt_dir  = None
             return
+
+        if self._mode == 'custom':
+            raise NotImplementedError(
+                "yaw_steering() is not supported for 'custom' mode; "
+                "incorporate solar optimisation directly in your callback."
+            )
 
         from ..power.solar_config import AbstractSolarConfig
         if not isinstance(solar_config, AbstractSolarConfig):
@@ -439,6 +493,23 @@ class AttitudeLaw:
         return np.arctan2(sin_a, cos_a)                       # (N,)
 
     # ------------------------------------------------------------------
+    # Representation
+    # ------------------------------------------------------------------
+
+    def __repr__(self) -> str:
+        if self._mode == 'fixed':
+            return (
+                f"AttitudeLaw(mode='fixed', frame={self._frame!r}, "
+                f"boresight={self._pointing_in_ref})"
+            )
+        if self._mode == 'track':
+            return f"AttitudeLaw(mode='track', target={self._target!r})"
+        if self._mode == 'custom':
+            cb_name = getattr(self._callback, '__name__', repr(self._callback))
+            return f"AttitudeLaw(mode='custom', callback={cb_name!r})"
+        return f"AttitudeLaw(mode={self._mode!r})"
+
+    # ------------------------------------------------------------------
     # Pointing methods
     # ------------------------------------------------------------------
 
@@ -476,12 +547,15 @@ class AttitudeLaw:
             if   self._frame == 'eci':  vecs = tile
             elif self._frame == 'lvlh': vecs = lvlh_to_eci(tile, r_2d, v_2d)
             else:                       vecs = ecef_to_eci(tile, t_arr)
-        else:  # 'track'
+        elif self._mode == 'track':
             r_tgt, _ = propagate_analytical(
                 t_arr, **self._target.keplerian_params,
                 propagator_type=self._target.propagator_type,
             )
             vecs = r_tgt - r_2d
+        else:  # 'custom'
+            qs   = np.asarray(self._callback(t_arr, r_2d, v_2d), dtype=np.float64)
+            vecs = _q_rotate_batch(qs, np.array([0., 0., 1.]))
 
         result = vecs / np.linalg.norm(vecs, axis=1, keepdims=True)
         return result[0] if scalar else result
@@ -606,7 +680,7 @@ class AttitudeLaw:
                 if   self._frame == 'eci':  vecs = tiled
                 elif self._frame == 'lvlh': vecs = lvlh_to_eci(tiled, r_2d, v_2d)
                 else:                       vecs = ecef_to_eci(tiled, t_arr)
-        else:  # 'track'
+        elif self._mode == 'track':
             r_tgt, _ = propagate_analytical(
                 t_arr, **self._target.keplerian_params,
                 propagator_type=self._target.propagator_type,
@@ -619,6 +693,9 @@ class AttitudeLaw:
                 qs = _q_from_vec_batch(d, roll=yaw_rolls)
             else:
                 qs = _q_from_vec_batch(d, roll=self._roll)
+            vecs = _q_rotate_batch(qs, v)                         # (N, 3)
+        else:  # 'custom'
+            qs   = np.asarray(self._callback(t_arr, r_2d, v_2d), dtype=np.float64)
             vecs = _q_rotate_batch(qs, v)                         # (N, 3)
 
         result = vecs / np.linalg.norm(vecs, axis=1, keepdims=True)
