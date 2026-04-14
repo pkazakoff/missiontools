@@ -209,6 +209,225 @@ class TestAttitudeLawTrack:
 
 
 # ===========================================================================
+# Limb-pointing attitude laws
+# ===========================================================================
+
+class TestAttitudeLawLimb:
+
+    # -- validation --------------------------------------------------------
+
+    def test_negative_altitude_raises(self):
+        with pytest.raises(ValueError, match="altitude_km"):
+            AttitudeLaw.limb([0., 0., 1.], altitude_km=-1.0)
+
+    def test_zero_body_vector_raises(self):
+        with pytest.raises(ValueError, match="zero"):
+            AttitudeLaw.limb([0., 0., 0.], altitude_km=0.0)
+
+    def test_bad_body_vector_shape_raises(self):
+        with pytest.raises(ValueError, match="shape"):
+            AttitudeLaw.limb([0., 0., 1., 0.], altitude_km=0.0)
+
+    def test_bad_flattening_raises(self):
+        with pytest.raises(ValueError, match="flattening"):
+            AttitudeLaw.limb([0., 0., 1.], altitude_km=0.0,
+                             body_flattening=1.5)
+        with pytest.raises(ValueError, match="flattening"):
+            AttitudeLaw.limb([0., 0., 1.], altitude_km=0.0,
+                             body_flattening=-0.1)
+
+    def test_bad_semi_major_raises(self):
+        with pytest.raises(ValueError, match="body_semi_major_axis"):
+            AttitudeLaw.limb([0., 0., 1.], altitude_km=0.0,
+                             body_semi_major_axis=-1.0)
+
+    def test_spacecraft_inside_ellipsoid_raises(self):
+        """Altitude so large that SC is inside the offset ellipsoid → raise."""
+        from missiontools.orbit.constants import EARTH_SEMI_MAJOR_AXIS
+        # Orbit radius 6_771_000 m; altitude of 500 km → offset a = 6.878e6
+        # — SC sits inside, tangent geometry undefined.
+        law = AttitudeLaw.limb([0., 0., 1.], altitude_km=500.0,
+                               body_flattening=0.0)
+        r, v, t = _orbit_state()
+        with pytest.raises(ValueError, match="inside the offset ellipsoid"):
+            law.pointing_eci(r, v, t)
+
+    # -- geometry ---------------------------------------------------------
+
+    def test_spherical_off_nadir_analytic(self):
+        """Spherical body (flattening=0), altitude=0, yaw=0, body-z limb:
+        pointing_lvlh must equal (−cos(off), sin(off), 0) with
+        off = asin(R_body / r_sc)."""
+        from missiontools.orbit.constants import EARTH_SEMI_MAJOR_AXIS
+        law = AttitudeLaw.limb([0., 0., 1.], altitude_km=0.0,
+                               body_flattening=0.0)
+        r, v, t = _orbit_state()
+        p_lvlh = law.pointing_lvlh(r, v, t)
+
+        r_sc = np.linalg.norm(r, axis=1)                     # (N,)
+        off  = np.arcsin(EARTH_SEMI_MAJOR_AXIS / r_sc)
+        expected = np.stack([-np.cos(off), np.sin(off),
+                             np.zeros_like(off)], axis=1)
+        np.testing.assert_allclose(p_lvlh, expected, atol=1e-10)
+
+    def test_tangent_point_on_offset_ellipsoid(self):
+        """The ray should be tangent to the offset ellipsoid: the quadratic
+        distance-along-ray has a double root and the touch point satisfies
+        (x/A)² + (y/A)² + (z/B)² = 1 in ECEF."""
+        from missiontools.attitude.attitude_law import _q_boresight  # noqa
+        from missiontools.orbit.constants import (EARTH_SEMI_MAJOR_AXIS,
+                                                  EARTH_INVERSE_FLATTENING)
+        from missiontools.orbit.frames import eci_to_ecef
+
+        altitude_km = 20.0
+        law = AttitudeLaw.limb([0., 0., 1.], altitude_km=altitude_km,
+                               yaw_deg=30.0)
+        r, v, t = _orbit_state()
+        d_eci = law.pointing_eci(r, v, t)
+
+        # Convert SC position and pointing direction to ECEF
+        r_ecef = eci_to_ecef(r, t)
+        d_ecef = eci_to_ecef(d_eci, t)
+
+        f = 1.0 / EARTH_INVERSE_FLATTENING
+        A = EARTH_SEMI_MAJOR_AXIS + altitude_km * 1e3
+        B = EARTH_SEMI_MAJOR_AXIS * (1 - f) + altitude_km * 1e3
+        diag_Q = np.array([1/A**2, 1/A**2, 1/B**2])
+
+        # Distance-along-ray quadratic: α s² + 2β s + γ = 0
+        alpha = (d_ecef**2 * diag_Q).sum(axis=1)
+        beta  = (d_ecef * r_ecef * diag_Q).sum(axis=1)
+        gamma = (r_ecef**2 * diag_Q).sum(axis=1) - 1.0
+
+        disc = beta**2 - alpha * gamma
+        np.testing.assert_allclose(disc, 0.0, atol=1e-6)
+
+        # Touch point (double root): s = −β/α, verify it's on the ellipsoid
+        s = -beta / alpha
+        touch = r_ecef + s[:, None] * d_ecef
+        np.testing.assert_allclose((touch**2 * diag_Q).sum(axis=1), 1.0,
+                                   atol=1e-9)
+
+    def test_ellipsoid_differs_from_sphere_at_high_inclination(self):
+        """With a 51.6° orbit, the WGS84 ellipsoid off-nadir angle must
+        differ from the spherical answer by a detectable amount."""
+        law_ell = AttitudeLaw.limb([0., 0., 1.], altitude_km=0.0)
+        law_sph = AttitudeLaw.limb([0., 0., 1.], altitude_km=0.0,
+                                   body_flattening=0.0)
+        r, v, t = _orbit_state()
+        p_ell = law_ell.pointing_lvlh(r, v, t)
+        p_sph = law_sph.pointing_lvlh(r, v, t)
+        diff = np.linalg.norm(p_ell - p_sph, axis=1)
+        assert np.any(diff > 1e-4), \
+            "WGS84 ellipsoid should measurably differ from sphere"
+
+    def test_yaw_plus_90_selects_plus_W(self):
+        """yaw=+90° places the limb direction on the +Ŵ side of LVLH."""
+        law = AttitudeLaw.limb([0., 0., 1.], altitude_km=0.0,
+                               body_flattening=0.0, yaw_deg=90.0)
+        r, v, t = _orbit_state()
+        p_lvlh = law.pointing_lvlh(r, v, t)
+        # Expected: (−cos(off), 0, +sin(off))
+        assert np.all(p_lvlh[:, 1] < 1e-10)    # no along-track component
+        assert np.all(p_lvlh[:, 2] > 0)        # +Ŵ component
+
+    def test_yaw_minus_90_selects_minus_W(self):
+        law = AttitudeLaw.limb([0., 0., 1.], altitude_km=0.0,
+                               body_flattening=0.0, yaw_deg=-90.0)
+        r, v, t = _orbit_state()
+        p_lvlh = law.pointing_lvlh(r, v, t)
+        assert np.all(p_lvlh[:, 1] < 1e-10)
+        assert np.all(p_lvlh[:, 2] < 0)
+
+    # -- body_vector freedom ----------------------------------------------
+
+    def test_body_vector_x_aligns_with_limb_direction(self):
+        """rotate_from_body([1,0,0], ...) on a body-x limb law must give the
+        same ECI direction as the boresight of a body-z limb law (same
+        geometry)."""
+        law_x = AttitudeLaw.limb([1., 0., 0.], altitude_km=0.0)
+        law_z = AttitudeLaw.limb([0., 0., 1.], altitude_km=0.0)
+        r, v, t = _orbit_state()
+        d_x = law_x.rotate_from_body([1., 0., 0.], r, v, t)
+        d_z = law_z.pointing_eci(r, v, t)
+        np.testing.assert_allclose(d_x, d_z, atol=1e-12)
+
+    def test_body_vector_boresight_not_aligned_when_body_vector_nonstandard(self):
+        """With body_vector=[1,0,0] the boresight (body-z) is NOT the limb
+        direction — it's perpendicular to it."""
+        law = AttitudeLaw.limb([1., 0., 0.], altitude_km=0.0)
+        r, v, t = _orbit_state()
+        d_limb = law.rotate_from_body([1., 0., 0.], r, v, t)
+        b_eci  = law.pointing_eci(r, v, t)            # body-z in ECI
+        dots   = np.einsum('ni,ni->n', d_limb, b_eci)
+        np.testing.assert_allclose(dots, 0.0, atol=1e-10)
+
+    # -- roll --------------------------------------------------------------
+
+    def test_roll_invariant_of_aligned_axis(self):
+        """Roll about the limb direction must not move the aligned body
+        vector."""
+        r, v, t = _orbit_state()
+        law0 = AttitudeLaw.limb([1., 0., 0.], altitude_km=0.0, roll_deg=0.0)
+        law1 = AttitudeLaw.limb([1., 0., 0.], altitude_km=0.0, roll_deg=37.0)
+        d0 = law0.rotate_from_body([1., 0., 0.], r, v, t)
+        d1 = law1.rotate_from_body([1., 0., 0.], r, v, t)
+        np.testing.assert_allclose(d0, d1, atol=1e-12)
+
+    def test_roll_moves_perpendicular_body_axis(self):
+        """Roll must move a body axis perpendicular to the limb direction."""
+        r, v, t = _orbit_state()
+        law0 = AttitudeLaw.limb([1., 0., 0.], altitude_km=0.0, roll_deg=0.0)
+        law1 = AttitudeLaw.limb([1., 0., 0.], altitude_km=0.0, roll_deg=45.0)
+        y0 = law0.rotate_from_body([0., 1., 0.], r, v, t)
+        y1 = law1.rotate_from_body([0., 1., 0.], r, v, t)
+        diff = np.linalg.norm(y0 - y1, axis=1)
+        assert np.all(diff > 1e-3)
+
+    def test_full_roll_returns_to_start(self):
+        """roll=360° gives the same body orientation as roll=0°."""
+        r, v, t = _orbit_state()
+        law0 = AttitudeLaw.limb([1., 0., 0.], altitude_km=0.0, roll_deg=0.0)
+        law_full = AttitudeLaw.limb([1., 0., 0.], altitude_km=0.0,
+                                    roll_deg=360.0)
+        y0 = law0.rotate_from_body([0., 1., 0.], r, v, t)
+        yf = law_full.rotate_from_body([0., 1., 0.], r, v, t)
+        np.testing.assert_allclose(y0, yf, atol=1e-10)
+
+    # -- shape / norm ------------------------------------------------------
+
+    def test_scalar_input_returns_1d(self):
+        law = AttitudeLaw.limb([0., 0., 1.], altitude_km=10.0)
+        r, v, t = _orbit_state(t=np.array([_EPOCH]))
+        p_eci  = law.pointing_eci(r[0],  v[0],  t[0])
+        p_lvlh = law.pointing_lvlh(r[0], v[0],  t[0])
+        p_ecef = law.pointing_ecef(r[0], v[0],  t[0])
+        assert p_eci.shape  == (3,)
+        assert p_lvlh.shape == (3,)
+        assert p_ecef.shape == (3,)
+
+    def test_pointing_unit_norm(self):
+        law = AttitudeLaw.limb([0., 0., 1.], altitude_km=30.0, yaw_deg=45.0)
+        r, v, t = _orbit_state()
+        for p in [law.pointing_eci(r, v, t),
+                  law.pointing_lvlh(r, v, t),
+                  law.pointing_ecef(r, v, t)]:
+            np.testing.assert_allclose(np.linalg.norm(p, axis=1), 1.0,
+                                       atol=1e-12)
+
+    # -- interaction with yaw_steering ------------------------------------
+
+    def test_yaw_steering_not_supported(self):
+        from missiontools import NormalVectorSolarConfig
+        cfg = NormalVectorSolarConfig(
+            normal_vecs=[[1, 0, 0]], areas=[1.0], efficiency=0.3,
+        )
+        law = AttitudeLaw.limb([0., 0., 1.], altitude_km=0.0)
+        with pytest.raises(NotImplementedError, match="limb"):
+            law.yaw_steering(cfg)
+
+
+# ===========================================================================
 # Yaw steering
 # ===========================================================================
 

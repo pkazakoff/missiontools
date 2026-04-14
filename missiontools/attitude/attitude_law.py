@@ -8,7 +8,10 @@ from __future__ import annotations
 import numpy as np
 import numpy.typing as npt
 
-from ..orbit.frames import (eci_to_ecef, eci_to_lvlh,
+from ..orbit.constants import (EARTH_SEMI_MAJOR_AXIS,
+                                EARTH_INVERSE_FLATTENING)
+from ..orbit.frames import (_lvlh_basis,
+                             eci_to_ecef, eci_to_lvlh,
                              ecef_to_eci, lvlh_to_eci,
                              sun_vec_eci)
 from ..orbit.propagation import propagate_analytical
@@ -151,6 +154,165 @@ def _q_rotate_batch(qs: npt.NDArray, v: npt.NDArray) -> npt.NDArray:
     ], axis=1)
 
 
+def _q_compose_batch(q1: npt.NDArray, q2: npt.NDArray) -> npt.NDArray:
+    """Element-wise Hamilton product of two (N, 4) quaternion arrays."""
+    w1, x1, y1, z1 = q1[:, 0], q1[:, 1], q1[:, 2], q1[:, 3]
+    w2, x2, y2, z2 = q2[:, 0], q2[:, 1], q2[:, 2], q2[:, 3]
+    return np.stack([
+        w1*w2 - x1*x2 - y1*y2 - z1*z2,
+        w1*x2 + x1*w2 + y1*z2 - z1*y2,
+        w1*y2 - x1*z2 + y1*w2 + z1*x2,
+        w1*z2 + x1*y2 - y1*x2 + z1*w2,
+    ], axis=1)
+
+
+def _q_align_batch(v_body: npt.NDArray,
+                   d_eci:  npt.NDArray,
+                   roll:   float = 0.0) -> npt.NDArray:
+    """Quaternions that align body-frame unit vector *v_body* with per-sample
+    ECI unit directions *d_eci*, followed by a right-hand roll of *roll*
+    radians about *d_eci*.
+
+    Parameters
+    ----------
+    v_body : npt.NDArray, shape (3,)
+        Body-frame unit vector to be aligned (pre-normalised).
+    d_eci : npt.NDArray, shape (N, 3)
+        Per-sample target directions in ECI (pre-normalised).
+    roll : float
+        Right-hand rotation about ``d_eci`` applied after alignment.
+
+    Returns
+    -------
+    npt.NDArray, shape (N, 4)
+        Unit quaternions [w, x, y, z] such that ``R(q) @ v_body = d_eci``
+        and the body is rolled by *roll* about ``d_eci``.
+    """
+    N   = len(d_eci)
+    c   = d_eci @ v_body                         # (N,)   cos(angle)
+    axis = np.cross(v_body, d_eci)                # (N, 3) |axis| = sin(angle)
+
+    half = np.empty((N, 4), dtype=np.float64)
+    half[:, 0]  = 1.0 + c
+    half[:, 1:] = axis
+
+    # 180° edge case: choose any axis perpendicular to v_body
+    mask = c < -0.9999
+    if mask.any():
+        ref  = (np.array([1., 0., 0.]) if abs(v_body[0]) < 0.9
+                else np.array([0., 1., 0.]))
+        perp = np.cross(v_body, ref)
+        perp = perp / np.linalg.norm(perp)
+        half[mask, 0]  = 0.0
+        half[mask, 1:] = perp
+
+    q_align = half / np.linalg.norm(half, axis=1, keepdims=True)
+
+    if roll == 0.0:
+        return q_align
+
+    # Roll about d_eci in the space frame, applied after alignment:
+    # q_final = q_roll ⊗ q_align
+    cr, sr = np.cos(roll / 2), np.sin(roll / 2)
+    q_roll = np.empty((N, 4), dtype=np.float64)
+    q_roll[:, 0]  = cr
+    q_roll[:, 1:] = sr * d_eci
+    return _q_compose_batch(q_roll, q_align)
+
+
+def _limb_direction(r_eci: npt.NDArray,
+                    v_eci: npt.NDArray,
+                    t_arr: npt.NDArray,
+                    yaw:   float,
+                    A:     float,
+                    B:     float) -> npt.NDArray:
+    """Unit vectors pointing at the limb tangent point, per time sample.
+
+    Solves the ellipsoid-tangency condition for a ray from the spacecraft
+    that grazes the offset ellipsoid with equatorial semi-axis ``A`` and
+    polar semi-axis ``B`` (central-body frame aligned with ECEF axes).
+    Yaw is measured right-handed about zenith (+R̂) in the LVLH horizontal
+    plane, with yaw=0 along +Ŝ.
+
+    Parameters
+    ----------
+    r_eci, v_eci : npt.NDArray, shape (N, 3)
+        Spacecraft ECI position and velocity.
+    t_arr : npt.NDArray[datetime64[us]], shape (N,)
+        Sample times.
+    yaw : float
+        Yaw angle (rad).
+    A, B : float
+        Offset-ellipsoid semi-axes (m).
+
+    Returns
+    -------
+    npt.NDArray, shape (N, 3)
+        Unit pointing directions in ECI.
+
+    Raises
+    ------
+    ValueError
+        If any sample has the spacecraft on or inside the offset ellipsoid,
+        or if the tangent equation has no real solution.
+    """
+    # LVLH basis in ECI: rows are R̂, Ŝ, Ŵ
+    L = _lvlh_basis(r_eci, v_eci)                  # (N, 3, 3)
+
+    # Transform SC position and LVLH basis rows into ECEF (where the
+    # offset ellipsoid is axis-aligned).
+    r_ecef     = eci_to_ecef(r_eci,     t_arr)      # (N, 3)
+    R_hat_ecef = eci_to_ecef(L[:, 0, :], t_arr)
+    S_hat_ecef = eci_to_ecef(L[:, 1, :], t_arr)
+    W_hat_ecef = eci_to_ecef(L[:, 2, :], t_arr)
+
+    # Horizontal-yaw direction and nadir direction in ECEF
+    cy, sy = np.cos(yaw), np.sin(yaw)
+    p = cy * S_hat_ecef + sy * W_hat_ecef           # (N, 3)
+    q = -R_hat_ecef                                 # (N, 3)
+
+    diag_Q = np.array([1.0 / A**2, 1.0 / A**2, 1.0 / B**2])
+    Qr = r_ecef * diag_Q                            # (N, 3)
+    Qp = p      * diag_Q
+    Qq = q      * diag_Q
+
+    Pr_  = np.einsum('ni,ni->n', p,      Qr)        # pᵀ Q r
+    Qr_  = np.einsum('ni,ni->n', q,      Qr)        # qᵀ Q r
+    gamma = np.einsum('ni,ni->n', r_ecef, Qr) - 1.0 # rᵀ Q r − 1
+    Pp   = np.einsum('ni,ni->n', p,      Qp)        # pᵀ Q p
+    QQ   = np.einsum('ni,ni->n', q,      Qq)        # qᵀ Q q
+    Pq   = np.einsum('ni,ni->n', p,      Qq)        # pᵀ Q q
+
+    if np.any(gamma <= 0):
+        raise ValueError(
+            "limb mode: spacecraft is on or inside the offset ellipsoid "
+            "(altitude_km may be too large or orbit too low)"
+        )
+
+    A_ = Pr_**2  - gamma * Pp
+    B_ = Pr_*Qr_ - gamma * Pq
+    C_ = Qr_**2  - gamma * QQ
+
+    disc = B_**2 - A_ * C_
+    if np.any(disc < 0):
+        raise ValueError(
+            "limb mode: tangent equation has no real solution for at "
+            "least one sample (check yaw_deg and altitude_km)"
+        )
+
+    sqrt_disc = np.sqrt(disc)
+    tau_a = (-B_ + sqrt_disc) / A_
+    tau_b = (-B_ - sqrt_disc) / A_
+    tau   = np.where(tau_a > 0, tau_a, tau_b)       # pick τ > 0 root
+
+    off = np.arctan(tau)                            # (N,) ∈ (−π/2, π/2)
+    s, c = np.sin(off), np.cos(off)
+    d_ecef = s[:, None] * p + c[:, None] * q        # (N, 3)
+    d_ecef = d_ecef / np.linalg.norm(d_ecef, axis=1, keepdims=True)
+
+    return ecef_to_eci(d_ecef, t_arr)
+
+
 def _q_boresight(q: npt.NDArray) -> npt.NDArray:
     """Boresight direction (body-z rotated by quaternion q).
 
@@ -245,8 +407,9 @@ class AttitudeLaw:
                  frame: str | None = None,
                  target=None,
                  roll: float = 0.0,
-                 callback=None):
-        self._mode     = mode      # 'fixed' | 'track' | 'custom'
+                 callback=None,
+                 limb_params: dict | None = None):
+        self._mode     = mode      # 'fixed' | 'track' | 'custom' | 'limb'
         self._q        = q         # (4,) unit ndarray [w,x,y,z], or None
         self._frame    = frame     # 'lvlh' | 'eci' | 'ecef', or None
         self._target   = target    # Spacecraft, or None
@@ -257,6 +420,8 @@ class AttitudeLaw:
         # Yaw steering state
         self._solar_config  = None   # AbstractSolarConfig, or None
         self._yaw_opt_dir   = None   # (3,) body-frame direction to face sun
+        # Limb mode parameters
+        self._limb = limb_params   # dict or None; keys: body_vector, yaw, roll, A, B
 
     # ------------------------------------------------------------------
     # Factory classmethods
@@ -393,6 +558,99 @@ class AttitudeLaw:
             )
         return cls('custom', callback=callback)
 
+    @classmethod
+    def limb(cls,
+             body_vector,
+             altitude_km: float,
+             *,
+             yaw_deg: float = 0.0,
+             roll_deg: float = 0.0,
+             body_semi_major_axis: float = EARTH_SEMI_MAJOR_AXIS,
+             body_flattening: float = 1.0 / EARTH_INVERSE_FLATTENING,
+             ) -> AttitudeLaw:
+        """Limb-pointing attitude law: body-frame vector grazes the central body.
+
+        The given body-frame vector is continuously aligned with the ray from
+        the spacecraft that grazes an offset ellipsoid at altitude
+        ``altitude_km`` above the central body.  The offset ellipsoid has
+        equatorial semi-axis ``body_semi_major_axis + altitude`` and polar
+        semi-axis ``body_semi_major_axis * (1 − body_flattening) + altitude``,
+        aligned with the ECEF axes.
+
+        Parameters
+        ----------
+        body_vector : array_like, shape (3,)
+            Body-frame axis to be aligned with the limb direction.  Need not
+            be pre-normalised.
+        altitude_km : float
+            Grazing altitude above the central body (km, ≥ 0).
+        yaw_deg : float, optional
+            Azimuth of the pointing direction in the LVLH horizontal plane,
+            measured right-handed about zenith (+R̂) from the +Ŝ
+            (along-track) axis.  Default 0 (forward limb).
+        roll_deg : float, optional
+            Right-hand rotation about the outward pointing vector.  Default 0.
+        body_semi_major_axis : float, optional
+            Equatorial radius of the central body (m).  Defaults to Earth
+            WGS84 (``EARTH_SEMI_MAJOR_AXIS``).
+        body_flattening : float, optional
+            Flattening of the central body (dimensionless, in ``[0, 1)``;
+            ``0`` gives a sphere).  Defaults to Earth WGS84
+            (``1 / EARTH_INVERSE_FLATTENING``).
+
+        Raises
+        ------
+        ValueError
+            If ``body_vector`` is the zero vector or not shape ``(3,)``,
+            ``altitude_km < 0``, ``body_semi_major_axis <= 0``, or
+            ``body_flattening`` is outside ``[0, 1)``.
+
+        Examples
+        --------
+        Limb sounder with the boresight (body-z) pointing at the forward
+        limb 20 km above the surface::
+
+            law = AttitudeLaw.limb([0, 0, 1], altitude_km=20)
+
+        Cross-track limb view with body-x aligned to the limb::
+
+            law = AttitudeLaw.limb([1, 0, 0], altitude_km=50, yaw_deg=90)
+        """
+        vec = np.asarray(body_vector, dtype=np.float64)
+        if vec.shape != (3,):
+            raise ValueError(
+                f"body_vector must have shape (3,), got {vec.shape}"
+            )
+        norm = np.linalg.norm(vec)
+        if norm == 0.0:
+            raise ValueError("body_vector must not be the zero vector")
+        if altitude_km < 0:
+            raise ValueError(
+                f"altitude_km must be non-negative, got {altitude_km}"
+            )
+        if body_semi_major_axis <= 0:
+            raise ValueError(
+                f"body_semi_major_axis must be positive, "
+                f"got {body_semi_major_axis}"
+            )
+        if not (0.0 <= body_flattening < 1.0):
+            raise ValueError(
+                f"body_flattening must be in [0, 1), got {body_flattening}"
+            )
+
+        altitude_m = altitude_km * 1e3
+        A = body_semi_major_axis + altitude_m
+        B = body_semi_major_axis * (1.0 - body_flattening) + altitude_m
+
+        limb_params = {
+            'body_vector': vec / norm,
+            'yaw':         np.deg2rad(yaw_deg),
+            'roll':        np.deg2rad(roll_deg),
+            'A':           A,
+            'B':           B,
+        }
+        return cls('limb', limb_params=limb_params)
+
     # ------------------------------------------------------------------
     # Yaw steering
     # ------------------------------------------------------------------
@@ -426,6 +684,11 @@ class AttitudeLaw:
             raise NotImplementedError(
                 "yaw_steering() is not supported for 'custom' mode; "
                 "incorporate solar optimisation directly in your callback."
+            )
+        if self._mode == 'limb':
+            raise NotImplementedError(
+                "yaw_steering() is not supported for 'limb' mode; the "
+                "roll DOF is already pinned by the limb geometry."
             )
 
         from ..power.solar_config import AbstractSolarConfig
@@ -507,6 +770,13 @@ class AttitudeLaw:
         if self._mode == 'custom':
             cb_name = getattr(self._callback, '__name__', repr(self._callback))
             return f"AttitudeLaw(mode='custom', callback={cb_name!r})"
+        if self._mode == 'limb':
+            return (
+                f"AttitudeLaw(mode='limb', "
+                f"body_vector={self._limb['body_vector'].tolist()}, "
+                f"yaw_deg={np.rad2deg(self._limb['yaw']):.3f}, "
+                f"roll_deg={np.rad2deg(self._limb['roll']):.3f})"
+            )
         return f"AttitudeLaw(mode={self._mode!r})"
 
     # ------------------------------------------------------------------
@@ -553,6 +823,15 @@ class AttitudeLaw:
                 propagator_type=self._target.propagator_type,
             )
             vecs = r_tgt - r_2d
+        elif self._mode == 'limb':
+            d_eci = _limb_direction(
+                r_2d, v_2d, t_arr,
+                self._limb['yaw'], self._limb['A'], self._limb['B'],
+            )
+            qs = _q_align_batch(
+                self._limb['body_vector'], d_eci, self._limb['roll'],
+            )
+            vecs = _q_rotate_batch(qs, np.array([0., 0., 1.]))
         else:  # 'custom'
             qs   = np.asarray(self._callback(t_arr, r_2d, v_2d), dtype=np.float64)
             vecs = _q_rotate_batch(qs, np.array([0., 0., 1.]))
@@ -693,6 +972,15 @@ class AttitudeLaw:
                 qs = _q_from_vec_batch(d, roll=yaw_rolls)
             else:
                 qs = _q_from_vec_batch(d, roll=self._roll)
+            vecs = _q_rotate_batch(qs, v)                         # (N, 3)
+        elif self._mode == 'limb':
+            d_eci = _limb_direction(
+                r_2d, v_2d, t_arr,
+                self._limb['yaw'], self._limb['A'], self._limb['B'],
+            )
+            qs = _q_align_batch(
+                self._limb['body_vector'], d_eci, self._limb['roll'],
+            )
             vecs = _q_rotate_batch(qs, v)                         # (N, 3)
         else:  # 'custom'
             qs   = np.asarray(self._callback(t_arr, r_2d, v_2d), dtype=np.float64)
