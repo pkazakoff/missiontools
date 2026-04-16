@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from missiontools import Spacecraft, AttitudeLaw, Sensor, AoI, Coverage
+from missiontools import Spacecraft, FixedAttitudeLaw, Sensor, AoI, Coverage
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -109,7 +109,7 @@ class TestCoverageConstruct:
 
     def test_independent_sensor_attached_works(self):
         sc = _sc()
-        s  = Sensor(30.0, attitude_law=AttitudeLaw.nadir())
+        s  = Sensor(30.0, attitude_law=FixedAttitudeLaw.nadir())
         sc.add_sensor(s)
         Coverage(_aoi(), [s])   # must not raise
 
@@ -235,7 +235,7 @@ class TestCoverageConstraints:
         sc_body.add_sensor(s_body)
 
         sc_ind = _sc()
-        s_ind  = Sensor(30.0, attitude_law=AttitudeLaw.nadir())
+        s_ind  = Sensor(30.0, attitude_law=FixedAttitudeLaw.nadir())
         sc_ind.add_sensor(s_ind)
 
         aoi = _aoi()

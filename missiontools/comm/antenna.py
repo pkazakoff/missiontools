@@ -30,7 +30,7 @@ class AbstractAntenna(ABC):
 
     **Spacecraft mounting** (provide exactly one):
 
-    - ``attitude_law`` — independent :class:`~missiontools.AttitudeLaw`
+    - ``attitude_law`` — independent :class:`~missiontools.AbstractAttitudeLaw`
     - ``body_vector`` — boresight direction in the spacecraft body frame
     - ``body_euler_deg`` — ``(yaw, pitch, roll)`` ZYX intrinsic Euler
       angles defining the boresight in the body frame
@@ -43,7 +43,7 @@ class AbstractAntenna(ABC):
 
     Parameters
     ----------
-    attitude_law : AttitudeLaw, optional
+    attitude_law : AbstractAttitudeLaw, optional
     body_vector : array_like, shape (3,), optional
     body_euler_deg : tuple of float, optional
     azimuth_deg : float, optional

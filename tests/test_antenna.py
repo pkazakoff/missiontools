@@ -186,12 +186,12 @@ class TestMounting:
             )
 
     def test_multiple_sc_options_raises(self):
-        from missiontools.attitude import AttitudeLaw
+        from missiontools.attitude import FixedAttitudeLaw
         with pytest.raises(ValueError, match="exactly one"):
             SymmetricAntenna(
                 [0, 180], [10, -10],
                 body_vector=[0, 0, 1],
-                attitude_law=AttitudeLaw.nadir(),
+                attitude_law=FixedAttitudeLaw.nadir(),
             )
 
     def test_ground_missing_elevation_raises(self):
@@ -341,9 +341,9 @@ class TestSymmetricAntennaSpacecraft:
         np.testing.assert_allclose(g1, g2, atol=0.01)
 
     def test_independent_attitude_law(self):
-        """Antenna with its own AttitudeLaw."""
-        from missiontools.attitude import AttitudeLaw
-        law = AttitudeLaw.fixed([0, 0, 1], 'eci')  # always points +z in ECI
+        """Antenna with its own attitude law."""
+        from missiontools.attitude import FixedAttitudeLaw
+        law = FixedAttitudeLaw([0, 0, 1], 'eci')  # always points +z in ECI
         ant = SymmetricAntenna(
             [0, 90, 180], [10, 0, -10],
             attitude_law=law,
@@ -427,10 +427,10 @@ class TestSymmetricAntennaGroundStation:
 class TestGainFrame:
     def test_ecef_frame(self):
         """gain with frame='ecef' should convert properly."""
-        from missiontools.attitude import AttitudeLaw
+        from missiontools.attitude import FixedAttitudeLaw
         ant = SymmetricAntenna(
             [0, 90, 180], [10, 0, -10],
-            attitude_law=AttitudeLaw.fixed([0, 0, 1], 'eci'),
+            attitude_law=FixedAttitudeLaw([0, 0, 1], 'eci'),
         )
         # At J2000 epoch, ECEF ≈ ECI (GMST ≈ 0 at noon)
         t = np.datetime64('2000-01-01T12:00:00', 'us')
@@ -445,10 +445,10 @@ class TestGainFrame:
         ant = IsotropicAntenna()
         # IsotropicAntenna overrides gain(), so this won't trigger the
         # base class validation. Test with SymmetricAntenna instead.
-        from missiontools.attitude import AttitudeLaw
+        from missiontools.attitude import FixedAttitudeLaw
         ant = SymmetricAntenna(
             [0, 180], [10, -10],
-            attitude_law=AttitudeLaw.fixed([0, 0, 1], 'eci'),
+            attitude_law=FixedAttitudeLaw([0, 0, 1], 'eci'),
         )
         with pytest.raises(ValueError, match="Unknown frame"):
             ant.gain(
@@ -458,10 +458,10 @@ class TestGainFrame:
             )
 
     def test_lvlh_requires_state(self):
-        from missiontools.attitude import AttitudeLaw
+        from missiontools.attitude import FixedAttitudeLaw
         ant = SymmetricAntenna(
             [0, 180], [10, -10],
-            attitude_law=AttitudeLaw.fixed([0, 0, 1], 'eci'),
+            attitude_law=FixedAttitudeLaw([0, 0, 1], 'eci'),
         )
         with pytest.raises(ValueError, match="r_eci and v_eci"):
             ant.gain(

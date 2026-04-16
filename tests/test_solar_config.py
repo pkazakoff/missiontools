@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from missiontools import Spacecraft, AttitudeLaw, NormalVectorSolarConfig
+from missiontools import Spacecraft, FixedAttitudeLaw, NormalVectorSolarConfig
 from missiontools.power import AbstractSolarConfig
 from missiontools.orbit import sun_vec_eci
 

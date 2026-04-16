@@ -61,8 +61,8 @@ class Sensor:
     half_angle_deg : float
         Half-angle of the sensor's conical field of view (degrees).
         Must satisfy ``0 < half_angle_deg <= 90``.
-    attitude_law : AttitudeLaw, optional
-        Independent :class:`~missiontools.AttitudeLaw` for this sensor,
+    attitude_law : AbstractAttitudeLaw, optional
+        Independent :class:`~missiontools.AbstractAttitudeLaw` for this sensor,
         decoupled from the host spacecraft's attitude.  Mutually exclusive
         with ``body_vector`` and ``body_euler_deg``.
     body_vector : array_like, shape (3,), optional
@@ -86,8 +86,8 @@ class Sensor:
     --------
     Nadir-pointing sensor, 10° half-angle::
 
-        from missiontools import Sensor, AttitudeLaw
-        sensor = Sensor(10.0, attitude_law=AttitudeLaw.nadir())
+        from missiontools import Sensor, FixedAttitudeLaw
+        sensor = Sensor(10.0, attitude_law=FixedAttitudeLaw.nadir())
 
     Sensor body-mounted along spacecraft body-z (boresight = nadir for a
     nadir spacecraft), 5° half-angle::
@@ -133,10 +133,10 @@ class Sensor:
         self._spacecraft = None   # set by Spacecraft.add_sensor
 
         if attitude_law is not None:
-            from .attitude import AttitudeLaw
-            if not isinstance(attitude_law, AttitudeLaw):
+            from .attitude import AbstractAttitudeLaw
+            if not isinstance(attitude_law, AbstractAttitudeLaw):
                 raise TypeError(
-                    f"attitude_law must be an AttitudeLaw instance, "
+                    f"attitude_law must be an AbstractAttitudeLaw instance, "
                     f"got {type(attitude_law).__name__!r}"
                 )
             self._mode         = 'independent'

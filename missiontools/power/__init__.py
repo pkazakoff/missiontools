@@ -30,7 +30,7 @@ Usage
 -----
 Solar configs are attached to a :class:`~missiontools.Spacecraft` via
 :meth:`~missiontools.Spacecraft.add_solar_config`.  They can also drive
-yaw steering via :meth:`~missiontools.AttitudeLaw.yaw_steering`::
+yaw steering via :meth:`~missiontools.AbstractAttitudeLaw.yaw_steering`::
 
     import numpy as np
     from missiontools import Spacecraft, NormalVectorSolarConfig

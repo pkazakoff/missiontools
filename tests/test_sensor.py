@@ -1,7 +1,8 @@
 import numpy as np
 import pytest
 
-from missiontools import Spacecraft, AttitudeLaw, Sensor
+from missiontools import (Spacecraft, FixedAttitudeLaw, TrackAttitudeLaw,
+                          AbstractAttitudeLaw, Sensor)
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -44,11 +45,11 @@ class TestSensorConstruct:
     def test_two_modes_raises(self):
         with pytest.raises(ValueError, match='Only one'):
             Sensor(10.0,
-                   attitude_law=AttitudeLaw.nadir(),
+                   attitude_law=FixedAttitudeLaw.nadir(),
                    body_vector=[0, 0, 1])
 
     def test_independent_mode_stored(self):
-        law = AttitudeLaw.nadir()
+        law = FixedAttitudeLaw.nadir()
         s = Sensor(10.0, attitude_law=law)
         assert s._mode == 'independent'
         assert s._attitude_law is law
@@ -62,7 +63,7 @@ class TestSensorConstruct:
         assert s._mode == 'body'
 
     def test_invalid_attitude_law_type_raises(self):
-        with pytest.raises(TypeError, match='AttitudeLaw'):
+        with pytest.raises(TypeError, match='AbstractAttitudeLaw'):
             Sensor(10.0, attitude_law='nadir')
 
 
@@ -161,12 +162,12 @@ class TestSensorBodyEuler:
 class TestSensorIndependent:
 
     def test_stores_attitude_law(self):
-        law = AttitudeLaw.nadir()
+        law = FixedAttitudeLaw.nadir()
         s = Sensor(10.0, attitude_law=law)
         assert s._attitude_law is law
 
     def test_pointing_eci_delegates(self):
-        law = AttitudeLaw.nadir()
+        law = FixedAttitudeLaw.nadir()
         s   = Sensor(10.0, attitude_law=law)
         sc  = _sc()
         r, v, t = _orbit_state(sc)
@@ -177,7 +178,7 @@ class TestSensorIndependent:
         )
 
     def test_pointing_lvlh_delegates(self):
-        law = AttitudeLaw.nadir()
+        law = FixedAttitudeLaw.nadir()
         s   = Sensor(10.0, attitude_law=law)
         sc  = _sc()
         r, v, t = _orbit_state(sc)
@@ -188,7 +189,7 @@ class TestSensorIndependent:
         )
 
     def test_pointing_ecef_delegates(self):
-        law = AttitudeLaw.nadir()
+        law = FixedAttitudeLaw.nadir()
         s   = Sensor(10.0, attitude_law=law)
         sc  = _sc()
         r, v, t = _orbit_state(sc)
@@ -200,7 +201,7 @@ class TestSensorIndependent:
 
     def test_no_spacecraft_needed(self):
         # Independent sensors work without an attached spacecraft
-        s = Sensor(10.0, attitude_law=AttitudeLaw.nadir())
+        s = Sensor(10.0, attitude_law=FixedAttitudeLaw.nadir())
         assert s.spacecraft is None
         sc = _sc()
         r, v, t = _orbit_state(sc)
@@ -259,7 +260,7 @@ class TestSpacecraftSensorRelationship:
 class TestSensorPointing:
     """Verify body-mounted sensor pointing directions on a nadir spacecraft.
 
-    Nadir spacecraft (AttitudeLaw.nadir()) quaternion maps body frame → LVLH:
+    Nadir spacecraft (FixedAttitudeLaw.nadir()) quaternion maps body frame → LVLH:
       body-z [0,0,1] → LVLH [-1, 0, 0]  (nadir = −R̂)
       body-x [1,0,0] → LVLH [ 0, 1, 0]  (along-track = Ŝ)
       body-y [0,1,0] → LVLH [ 0, 0,-1]  (−orbit-normal = −Ŵ)
@@ -309,7 +310,7 @@ class TestSensorPointing:
             a=7_000_000., e=0., i=np.radians(60.), raan=0.5,
             arg_p=0., ma=0., epoch=_EPOCH,
         )
-        sc_host.attitude_law = AttitudeLaw.track(sc_target)
+        sc_host.attitude_law = TrackAttitudeLaw(sc_target)
         s = Sensor(10.0, body_vector=[0, 0, 1])   # sensor boresight = body-z
         sc_host.add_sensor(s)
 

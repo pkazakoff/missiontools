@@ -7,7 +7,7 @@ import numpy as np
 from .orbit.constants import EARTH_MU, EARTH_J2, EARTH_SEMI_MAJOR_AXIS
 from .orbit.propagation import (propagate_analytical, sun_synchronous_orbit,
                                  geostationary_orbit, highly_elliptical_orbit)
-from .attitude import AttitudeLaw
+from .attitude import AbstractAttitudeLaw, FixedAttitudeLaw
 
 _VALID_PROPAGATORS = frozenset({'twobody', 'j2'})
 
@@ -96,22 +96,22 @@ class Spacecraft:
                 f"got {self.propagator_type!r}"
             )
         self.epoch = np.asarray(self.epoch, dtype='datetime64[us]').item()
-        self._attitude_law: AttitudeLaw = AttitudeLaw.nadir()
+        self._attitude_law: AbstractAttitudeLaw = FixedAttitudeLaw.nadir()
         self._sensors: list = []
         self._solar_configs: list = []
         self._thermal_configs: list = []
         self._antennas: list = []
 
     @property
-    def attitude_law(self) -> AttitudeLaw:
+    def attitude_law(self) -> AbstractAttitudeLaw:
         """Pointing law for this spacecraft.  Defaults to nadir pointing."""
         return self._attitude_law
 
     @attitude_law.setter
-    def attitude_law(self, value: AttitudeLaw) -> None:
-        if not isinstance(value, AttitudeLaw):
+    def attitude_law(self, value: AbstractAttitudeLaw) -> None:
+        if not isinstance(value, AbstractAttitudeLaw):
             raise TypeError(
-                f"attitude_law must be an AttitudeLaw instance, "
+                f"attitude_law must be an AbstractAttitudeLaw instance, "
                 f"got {type(value).__name__!r}"
             )
         self._attitude_law = value
