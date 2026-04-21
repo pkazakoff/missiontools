@@ -9,7 +9,7 @@ import numpy as np
 import numpy.typing as npt
 
 from .aoi import AoI
-from .sensor import Sensor
+from .sensor import AbstractSensor
 from .coverage import (
     make_sensor_spec,
     coverage_fraction_multi,
@@ -37,8 +37,8 @@ class Coverage:
     ----------
     aoi : AoI
         Area of interest containing ground sample points.
-    sensors : sequence of Sensor
-        One or more :class:`~missiontools.Sensor` instances (list, tuple, or
+    sensors : sequence of AbstractSensor
+        One or more :class:`~missiontools.AbstractSensor` instances (list, tuple, or
         any iterable).  All sensors must be attached to a spacecraft.  Sensors
         may belong to the same spacecraft (multi-FOV) or to different
         spacecraft (constellation).
@@ -65,12 +65,12 @@ class Coverage:
     Single sensor::
 
         import numpy as np
-        from missiontools import Spacecraft, Sensor, AoI, Coverage
+        from missiontools import Spacecraft, ConicSensor, AoI, Coverage
 
         sc     = Spacecraft(a=6_771_000., e=0., i=np.radians(51.6),
                             raan=0., arg_p=0., ma=0.,
                             epoch=np.datetime64('2025-01-01', 'us'))
-        sensor = Sensor(30.0, body_vector=[0, 0, 1])
+        sensor = ConicSensor(30.0, body_vector=[0, 0, 1])
         sc.add_sensor(sensor)
 
         aoi = AoI.from_region(-60, 60, -180, 180)
@@ -87,7 +87,7 @@ class Coverage:
         sc2    = Spacecraft(a=6_771_000., e=0., i=np.radians(51.6),
                             raan=np.radians(90.), arg_p=0., ma=0.,
                             epoch=np.datetime64('2025-01-01', 'us'))
-        s2     = Sensor(30.0, body_vector=[0, 0, 1])
+        s2     = ConicSensor(30.0, body_vector=[0, 0, 1])
         sc2.add_sensor(s2)
 
         cov2 = Coverage(aoi, [sensor, s2], el_min_deg=5.0)
@@ -116,11 +116,11 @@ class Coverage:
         # --- validate sensors -----------------------------------------------
         sensors = list(sensors)
         if len(sensors) == 0:
-            raise ValueError("sensors must be a non-empty sequence of Sensor objects")
+            raise ValueError("sensors must be a non-empty sequence of AbstractSensor objects")
         for s in sensors:
-            if not isinstance(s, Sensor):
+            if not isinstance(s, AbstractSensor):
                 raise TypeError(
-                    f"Each element of sensors must be a Sensor instance, "
+                    f"Each element of sensors must be an AbstractSensor instance, "
                     f"got {type(s).__name__!r}"
                 )
             if s.spacecraft is None:

@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from missiontools import Spacecraft, FixedAttitudeLaw, Sensor, AoI, Coverage
+from missiontools import Spacecraft, FixedAttitudeLaw, ConicSensor, AoI, Coverage
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -28,7 +28,7 @@ def _sc():
 
 def _sensor():
     """Body-mounted nadir sensor (body-z boresight, 30° FOV)."""
-    return Sensor(30.0, body_vector=[0, 0, 1])
+    return ConicSensor(30.0, body_vector=[0, 0, 1])
 
 
 def _aoi():
@@ -62,7 +62,7 @@ class TestCoverageConstruct:
     def test_sensors_not_iterable_raises(self):
         s = _attached_sensor()
         with pytest.raises(TypeError):
-            Coverage(_aoi(), s)   # bare Sensor, not iterable
+            Coverage(_aoi(), s)   # bare ConicSensor, not iterable
 
     def test_sensors_tuple_accepted(self):
         s = _attached_sensor()
@@ -74,13 +74,13 @@ class TestCoverageConstruct:
             Coverage(_aoi(), [])
 
     def test_sensor_wrong_element_type_raises(self):
-        with pytest.raises(TypeError, match='Sensor'):
+        with pytest.raises(TypeError, match='AbstractSensor'):
             Coverage(_aoi(), ['not_a_sensor'])
 
     def test_multiple_sensors_same_spacecraft_accepted(self):
         sc = _sc()
-        s1 = Sensor(10.0, body_vector=[0, 0, 1])
-        s2 = Sensor(10.0, body_vector=[0, 1, 0])
+        s1 = ConicSensor(10.0, body_vector=[0, 0, 1])
+        s2 = ConicSensor(10.0, body_vector=[0, 1, 0])
         sc.add_sensor(s1)
         sc.add_sensor(s2)
         Coverage(_aoi(), [s1, s2])   # must not raise
@@ -109,7 +109,7 @@ class TestCoverageConstruct:
 
     def test_independent_sensor_attached_works(self):
         sc = _sc()
-        s  = Sensor(30.0, attitude_law=FixedAttitudeLaw.nadir())
+        s  = ConicSensor(30.0, attitude_law=FixedAttitudeLaw.nadir())
         sc.add_sensor(s)
         Coverage(_aoi(), [s])   # must not raise
 
@@ -231,11 +231,11 @@ class TestCoverageConstraints:
         """An independent nadir AttitudeLaw sensor and a body-z sensor on a nadir
         spacecraft should produce identical coverage."""
         sc_body = _sc()
-        s_body  = Sensor(30.0, body_vector=[0, 0, 1])
+        s_body  = ConicSensor(30.0, body_vector=[0, 0, 1])
         sc_body.add_sensor(s_body)
 
         sc_ind = _sc()
-        s_ind  = Sensor(30.0, attitude_law=FixedAttitudeLaw.nadir())
+        s_ind  = ConicSensor(30.0, attitude_law=FixedAttitudeLaw.nadir())
         sc_ind.add_sensor(s_ind)
 
         aoi = _aoi()
@@ -264,7 +264,7 @@ class TestCoverageMultiSensor:
 
     def _make_attached(self, raan_deg: float = 0.0):
         sc = self._make_sc(raan_deg)
-        s  = Sensor(30.0, body_vector=[0, 0, 1])
+        s  = ConicSensor(30.0, body_vector=[0, 0, 1])
         sc.add_sensor(s)
         return s
 
@@ -280,8 +280,8 @@ class TestCoverageMultiSensor:
         """Two sensors on the same satellite (different FOV axes) should not
         crash and return a valid cumulative coverage fraction."""
         sc = self._make_sc()
-        s1 = Sensor(30.0, body_vector=[0, 0, 1])
-        s2 = Sensor(30.0, body_vector=[0, 1, 0])
+        s1 = ConicSensor(30.0, body_vector=[0, 0, 1])
+        s2 = ConicSensor(30.0, body_vector=[0, 1, 0])
         sc.add_sensor(s1)
         sc.add_sensor(s2)
         cov = Coverage(_aoi(), [s1, s2])

@@ -219,25 +219,25 @@ class Spacecraft:
         self._antennas.append(antenna)
 
     def add_sensor(self, sensor) -> None:
-        """Attach a Sensor to this spacecraft.
+        """Attach a sensor to this spacecraft.
 
         Sets the sensor's back-reference to this spacecraft and appends it to
         the internal sensors list.
 
         Parameters
         ----------
-        sensor : Sensor
+        sensor : AbstractSensor
             The sensor to attach.
 
         Raises
         ------
         TypeError
-            If ``sensor`` is not a :class:`~missiontools.Sensor` instance.
+            If ``sensor`` is not an :class:`~missiontools.AbstractSensor` instance.
         """
-        from .sensor import Sensor  # local import avoids circular dep
-        if not isinstance(sensor, Sensor):
+        from .sensor import AbstractSensor  # local import avoids circular dep
+        if not isinstance(sensor, AbstractSensor):
             raise TypeError(
-                f"sensor must be a Sensor instance, "
+                f"sensor must be an AbstractSensor instance, "
                 f"got {type(sensor).__name__!r}"
             )
         sensor._spacecraft = self
