@@ -1200,6 +1200,9 @@ plot = [
 ]
 
 [package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
 docs = [
     { name = "cartopy" },
     { name = "furo" },
@@ -1228,6 +1231,7 @@ requires-dist = [
 provides-extras = ["dev", "plot"]
 
 [package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=9.0.2" }]
 docs = [
     { name = "cartopy", specifier = ">=0.25.0" },
     { name = "furo" },

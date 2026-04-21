@@ -18,7 +18,7 @@ import numpy.typing as npt
 
 from ..orbit.frames import ecef_to_eci, lvlh_to_eci, azel_to_enu, enu_to_ecef
 from ..orbit.constants import EARTH_MEAN_RADIUS
-from ..sensor import _euler_zyx_to_boresight
+from ..sensor.sensor_law import _euler_zyx_to_boresight
 
 
 class AbstractAntenna(ABC):
