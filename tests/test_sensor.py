@@ -2,7 +2,8 @@ import numpy as np
 import pytest
 
 from missiontools import (Spacecraft, FixedAttitudeLaw, TrackAttitudeLaw,
-                          AbstractAttitudeLaw, AbstractSensor, ConicSensor)
+                          AbstractAttitudeLaw, AbstractSensor, ConicSensor,
+                          RectangularSensor)
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -321,6 +322,195 @@ class TestSensorPointing:
 
 
 # ===========================================================================
+# RectangularSensor — construction & validation
+# ===========================================================================
+
+class TestRectangularSensorConstruct:
+
+    def test_no_mode_raises(self):
+        with pytest.raises(ValueError, match='Exactly one'):
+            RectangularSensor(10.0, 5.0)
+
+    def test_two_modes_raises(self):
+        with pytest.raises(ValueError, match='Only one'):
+            RectangularSensor(10.0, 5.0,
+                              attitude_law=FixedAttitudeLaw.nadir(),
+                              body_vector=[0, 0, 1])
+
+    def test_invalid_theta1_zero_raises(self):
+        with pytest.raises(ValueError, match='theta1_deg'):
+            RectangularSensor(0.0, 5.0, body_vector=[0, 0, 1])
+
+    def test_invalid_theta1_negative_raises(self):
+        with pytest.raises(ValueError, match='theta1_deg'):
+            RectangularSensor(-5.0, 5.0, body_vector=[0, 0, 1])
+
+    def test_invalid_theta1_above_90_raises(self):
+        with pytest.raises(ValueError, match='theta1_deg'):
+            RectangularSensor(91.0, 5.0, body_vector=[0, 0, 1])
+
+    def test_invalid_theta2_zero_raises(self):
+        with pytest.raises(ValueError, match='theta2_deg'):
+            RectangularSensor(10.0, 0.0, body_vector=[0, 0, 1])
+
+    def test_invalid_theta2_negative_raises(self):
+        with pytest.raises(ValueError, match='theta2_deg'):
+            RectangularSensor(10.0, -5.0, body_vector=[0, 0, 1])
+
+    def test_invalid_theta2_above_90_raises(self):
+        with pytest.raises(ValueError, match='theta2_deg'):
+            RectangularSensor(10.0, 91.0, body_vector=[0, 0, 1])
+
+    def test_independent_mode_stored(self):
+        law = FixedAttitudeLaw.nadir()
+        s = RectangularSensor(10.0, 5.0, attitude_law=law)
+        assert s._mode == 'independent'
+        assert s._attitude_law is law
+
+    def test_body_vector_mode_stored(self):
+        s = RectangularSensor(10.0, 5.0, body_vector=[0, 0, 1])
+        assert s._mode == 'body'
+
+    def test_body_euler_mode_stored(self):
+        s = RectangularSensor(10.0, 5.0, body_euler_deg=(0, 0, 0))
+        assert s._mode == 'body'
+
+    def test_roll_constraint_with_attitude_law_raises(self):
+        with pytest.raises(ValueError, match='roll_constraint'):
+            RectangularSensor(10.0, 5.0,
+                              attitude_law=FixedAttitudeLaw.nadir(),
+                              roll_constraint=[1, 0, 0])
+
+    def test_roll_constraint_zero_vector_raises(self):
+        with pytest.raises(ValueError, match='zero vector'):
+            RectangularSensor(10.0, 5.0, body_vector=[0, 0, 1],
+                              roll_constraint=[0, 0, 0])
+
+    def test_roll_constraint_parallel_to_boresight_raises(self):
+        with pytest.raises(ValueError, match='parallel'):
+            RectangularSensor(10.0, 5.0, body_vector=[0, 0, 1],
+                              roll_constraint=[0, 0, 1])
+
+    def test_roll_constraint_wrong_shape_raises(self):
+        with pytest.raises(ValueError, match='shape'):
+            RectangularSensor(10.0, 5.0, body_vector=[0, 0, 1],
+                              roll_constraint=[1, 0])
+
+    def test_roll_constraint_stored_as_unit_vector(self):
+        s = RectangularSensor(10.0, 5.0, body_vector=[0, 0, 1],
+                              roll_constraint=[3, 0, 0])
+        np.testing.assert_allclose(np.linalg.norm(s._roll_constraint), 1.0)
+        np.testing.assert_allclose(s._roll_constraint, [1., 0., 0.])
+
+    def test_roll_constraint_none_when_not_provided(self):
+        s = RectangularSensor(10.0, 5.0, body_vector=[0, 0, 1])
+        assert s._roll_constraint is None
+
+    def test_invalid_attitude_law_type_raises(self):
+        with pytest.raises(TypeError, match='AbstractAttitudeLaw'):
+            RectangularSensor(10.0, 5.0, attitude_law='nadir')
+
+
+class TestRectangularSensorAngles:
+
+    def test_theta1_stored_as_radians(self):
+        s = RectangularSensor(30.0, 15.0, body_vector=[0, 0, 1])
+        np.testing.assert_allclose(s.theta1_rad, np.radians(30.0))
+
+    def test_theta2_stored_as_radians(self):
+        s = RectangularSensor(30.0, 15.0, body_vector=[0, 0, 1])
+        np.testing.assert_allclose(s.theta2_rad, np.radians(15.0))
+
+    def test_theta1_deg_roundtrip(self):
+        s = RectangularSensor(30.0, 15.0, body_vector=[0, 0, 1])
+        np.testing.assert_allclose(s.theta1_deg, 30.0)
+
+    def test_theta2_deg_roundtrip(self):
+        s = RectangularSensor(30.0, 15.0, body_vector=[0, 0, 1])
+        np.testing.assert_allclose(s.theta2_deg, 15.0)
+
+    def test_90_deg_accepted_for_both(self):
+        s = RectangularSensor(90.0, 90.0, body_vector=[0, 0, 1])
+        np.testing.assert_allclose(s.theta1_rad, np.pi / 2)
+        np.testing.assert_allclose(s.theta2_rad, np.pi / 2)
+
+
+class TestRectangularSensorPointing:
+
+    def _setup(self, body_vec):
+        sc = _sc()
+        s  = RectangularSensor(10.0, 5.0, body_vector=body_vec)
+        sc.add_sensor(s)
+        r, v, t = _orbit_state(sc)
+        return s, r, v, t
+
+    def test_body_z_sensor_on_nadir_sc_points_nadir(self):
+        s, r, v, t = self._setup([0, 0, 1])
+        lvlh = s.pointing_lvlh(r, v, t)
+        np.testing.assert_allclose(lvlh, [-1., 0., 0.], atol=1e-10)
+
+    def test_pointing_eci_is_unit(self):
+        s, r, v, t = self._setup([0, 0, 1])
+        np.testing.assert_allclose(np.linalg.norm(s.pointing_eci(r, v, t)), 1.0,
+                                   atol=1e-12)
+
+    def test_independent_mode_delegates_to_attitude_law(self):
+        law = FixedAttitudeLaw.nadir()
+        s   = RectangularSensor(10.0, 5.0, attitude_law=law)
+        sc  = _sc()
+        r, v, t = _orbit_state(sc)
+        np.testing.assert_allclose(
+            s.pointing_eci(r, v, t),
+            law.pointing_eci(r, v, t),
+            atol=1e-12,
+        )
+
+    def test_body_mode_raises_before_attach(self):
+        s  = RectangularSensor(10.0, 5.0, body_vector=[0, 0, 1])
+        sc = _sc()
+        r, v, t = _orbit_state(sc)
+        with pytest.raises(RuntimeError, match='add_sensor'):
+            s.pointing_eci(r, v, t)
+
+    def test_roll_constraint_does_not_change_boresight(self):
+        """Roll constraint must not alter the boresight direction."""
+        sc  = _sc()
+        s1  = RectangularSensor(10.0, 5.0, body_vector=[0, 0, 1])
+        s2  = RectangularSensor(10.0, 5.0, body_vector=[0, 0, 1],
+                                roll_constraint=[1, 0, 0])
+        sc.add_sensor(s1)
+        sc.add_sensor(s2)
+        r, v, t = _orbit_state(sc)
+        np.testing.assert_allclose(
+            s1.pointing_eci(r, v, t),
+            s2.pointing_eci(r, v, t),
+            atol=1e-12,
+        )
+
+
+class TestRectangularSensorRollConstraint:
+
+    def test_roll_constraint_none_by_default(self):
+        s = RectangularSensor(10.0, 5.0, body_vector=[0, 0, 1])
+        assert s.roll_constraint is None
+
+    def test_roll_constraint_accessible_via_property(self):
+        s = RectangularSensor(10.0, 5.0, body_vector=[0, 0, 1],
+                              roll_constraint=[0, 1, 0])
+        np.testing.assert_allclose(s.roll_constraint, [0., 1., 0.])
+
+    def test_roll_constraint_is_unit_vector(self):
+        s = RectangularSensor(10.0, 5.0, body_vector=[0, 0, 1],
+                              roll_constraint=[2, 0, 0])
+        np.testing.assert_allclose(np.linalg.norm(s.roll_constraint), 1.0)
+
+    def test_roll_constraint_with_euler_mode(self):
+        s = RectangularSensor(10.0, 5.0, body_euler_deg=(0, 0, 0),
+                              roll_constraint=[1, 0, 0])
+        np.testing.assert_allclose(s.roll_constraint, [1., 0., 0.])
+
+
+# ===========================================================================
 # AbstractSensor hierarchy
 # ===========================================================================
 
@@ -341,4 +531,20 @@ class TestAbstractSensor:
         sc = _sc()
         s  = ConicSensor(10.0, body_vector=[0, 0, 1])
         sc.add_sensor(s)   # must not raise
+        assert s.spacecraft is sc
+
+
+class TestRectangularAbstractHierarchy:
+
+    def test_rectangular_is_subclass(self):
+        assert issubclass(RectangularSensor, AbstractSensor)
+
+    def test_rectangular_instance_passes_isinstance(self):
+        s = RectangularSensor(10.0, 5.0, body_vector=[0, 0, 1])
+        assert isinstance(s, AbstractSensor)
+
+    def test_spacecraft_accepts_rectangular_via_abstract_guard(self):
+        sc = _sc()
+        s  = RectangularSensor(10.0, 5.0, body_vector=[0, 0, 1])
+        sc.add_sensor(s)
         assert s.spacecraft is sc

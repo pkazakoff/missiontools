@@ -176,6 +176,10 @@ class Coverage:
                 np.timedelta64(1, 's'),
             )
             r, v, t = state['r'][0], state['v'][0], state['t'][0]
+            # TODO: RectangularSensor is not yet supported; coverage analysis
+            #       currently assumes a conical FOV via sensor.half_angle_rad.
+            #       A rectangular sensor spec (theta1, theta2, roll frame)
+            #       must be added to the coverage module.
             specs.append(make_sensor_spec(
                 sc.keplerian_params,
                 sc.propagator_type,

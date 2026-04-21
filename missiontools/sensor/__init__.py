@@ -10,8 +10,12 @@ each sensor geometry:
   half-angle.  The boresight can be driven by an independent
   :class:`~missiontools.AbstractAttitudeLaw` or fixed in the spacecraft body
   frame.
+- :class:`RectangularSensor` — sensor with a rectangular field of view,
+  defined by two independent half-angles (theta1, theta2).  Supports the
+  same pointing modes as :class:`ConicSensor` plus an optional roll
+  constraint vector for body-mounted sensors.
 """
 
-from .sensor_law import AbstractSensor, ConicSensor
+from .sensor_law import AbstractSensor, ConicSensor, RectangularSensor
 
-__all__ = ['AbstractSensor', 'ConicSensor']
+__all__ = ['AbstractSensor', 'ConicSensor', 'RectangularSensor']

@@ -321,3 +321,236 @@ class ConicSensor(AbstractSensor):
                     f"attitude_law={self._attitude_law!r})")
         return (f"ConicSensor(half_angle_deg={self.half_angle_deg:.3f}, "
                 f"mode='body', body_vector={self._body_vector.tolist()})")
+
+
+class RectangularSensor(AbstractSensor):
+    """An instrument attached to a spacecraft with a rectangular field of view.
+
+    The FOV is defined by two independent half-angles (``theta1_deg`` and
+    ``theta2_deg``).  The same three pointing modes as :class:`ConicSensor` are
+    supported.  In body mode an optional ``roll_constraint`` vector can be
+    supplied to fix the sensor's rotation around its boresight: the theta1 axis
+    of the sensor rectangle is aligned with the component of the constraint
+    vector perpendicular to the boresight.
+
+    Parameters
+    ----------
+    theta1_deg : float
+        Half-angle of the FOV along the first (theta1) axis (degrees).
+        Must satisfy ``0 < theta1_deg <= 90``.
+    theta2_deg : float
+        Half-angle of the FOV along the second (theta2) axis (degrees).
+        Must satisfy ``0 < theta2_deg <= 90``.
+    attitude_law : AbstractAttitudeLaw, optional
+        Independent attitude law for this sensor.  Mutually exclusive with
+        ``body_vector`` and ``body_euler_deg``.
+    body_vector : array_like, shape (3,), optional
+        Boresight in the spacecraft body frame.  Normalised on input.
+        Mutually exclusive with ``attitude_law`` and ``body_euler_deg``.
+    body_euler_deg : (yaw, pitch, roll) tuple of float, optional
+        ZYX intrinsic Euler angles (degrees) defining the sensor boresight
+        (sensor frame z-axis) in body-frame coordinates.  Mutually exclusive
+        with ``attitude_law`` and ``body_vector``.
+    roll_constraint : array_like, shape (3,), optional
+        Body-frame vector that constrains the sensor's roll around its
+        boresight.  Only valid with ``body_vector`` or ``body_euler_deg``
+        modes.  Must not be parallel to the boresight.  Normalised on input.
+
+    Notes
+    -----
+    Body-mounted sensors require attachment to a spacecraft via
+    :meth:`~missiontools.Spacecraft.add_sensor` before pointing methods can
+    be called.
+
+    The ``roll_constraint`` does not affect the boresight direction returned
+    by :meth:`pointing_eci`; it constrains the in-plane orientation of the
+    FOV rectangle for use in future coverage analysis.
+
+    Examples
+    --------
+    Nadir-pointing sensor, 10° × 5° FOV::
+
+        from missiontools import RectangularSensor, FixedAttitudeLaw
+        sensor = RectangularSensor(10.0, 5.0, attitude_law=FixedAttitudeLaw.nadir())
+
+    Body-mounted along body-z with a roll constraint along body-x::
+
+        sensor = RectangularSensor(10.0, 5.0, body_vector=[0, 0, 1],
+                                   roll_constraint=[1, 0, 0])
+    """
+
+    def __init__(
+            self,
+            theta1_deg: float,
+            theta2_deg: float,
+            *,
+            attitude_law=None,
+            body_vector: npt.ArrayLike | None = None,
+            body_euler_deg: tuple[float, float, float] | None = None,
+            roll_constraint: npt.ArrayLike | None = None,
+    ):
+        super().__init__()
+
+        # --- validate half-angles -------------------------------------------
+        for name, val in (('theta1_deg', theta1_deg), ('theta2_deg', theta2_deg)):
+            val = float(val)
+            if not (0.0 < val <= 90.0):
+                raise ValueError(
+                    f"{name} must be in (0, 90], got {val}"
+                )
+        self._theta1_rad: float = np.radians(float(theta1_deg))
+        self._theta2_rad: float = np.radians(float(theta2_deg))
+
+        # --- validate mode (exactly one) ------------------------------------
+        n_modes = sum(x is not None for x in
+                      (attitude_law, body_vector, body_euler_deg))
+        if n_modes == 0:
+            raise ValueError(
+                "Exactly one of 'attitude_law', 'body_vector', or "
+                "'body_euler_deg' must be provided."
+            )
+        if n_modes > 1:
+            raise ValueError(
+                "Only one of 'attitude_law', 'body_vector', or "
+                "'body_euler_deg' may be provided."
+            )
+
+        # --- store mode-specific state --------------------------------------
+        if attitude_law is not None:
+            from ..attitude import AbstractAttitudeLaw
+            if not isinstance(attitude_law, AbstractAttitudeLaw):
+                raise TypeError(
+                    f"attitude_law must be an AbstractAttitudeLaw instance, "
+                    f"got {type(attitude_law).__name__!r}"
+                )
+            if roll_constraint is not None:
+                raise ValueError(
+                    "roll_constraint is only valid with body_vector or "
+                    "body_euler_deg modes, not with attitude_law."
+                )
+            self._mode         = 'independent'
+            self._attitude_law = attitude_law
+            self._body_vector  = None
+
+        elif body_vector is not None:
+            vec = np.asarray(body_vector, dtype=np.float64)
+            if vec.shape != (3,):
+                raise ValueError(
+                    f"body_vector must have shape (3,), got {vec.shape}"
+                )
+            norm = np.linalg.norm(vec)
+            if norm == 0.0:
+                raise ValueError("body_vector must not be the zero vector")
+            self._mode         = 'body'
+            self._attitude_law = None
+            self._body_vector  = vec / norm
+
+        else:  # body_euler_deg
+            yaw, pitch, roll = (float(a) for a in body_euler_deg)
+            boresight = _euler_zyx_to_boresight(yaw, pitch, roll)
+            self._mode         = 'body'
+            self._attitude_law = None
+            self._body_vector  = boresight / np.linalg.norm(boresight)
+
+        # --- validate and store roll_constraint (body modes only) -----------
+        if roll_constraint is not None and self._mode == 'body':
+            rc = np.asarray(roll_constraint, dtype=np.float64)
+            if rc.shape != (3,):
+                raise ValueError(
+                    f"roll_constraint must have shape (3,), got {rc.shape}"
+                )
+            rc_norm = np.linalg.norm(rc)
+            if rc_norm == 0.0:
+                raise ValueError("roll_constraint must not be the zero vector")
+            rc = rc / rc_norm
+            if np.linalg.norm(np.cross(self._body_vector, rc)) < 1e-10:
+                raise ValueError(
+                    "roll_constraint must not be parallel to the boresight "
+                    "(body_vector)"
+                )
+            self._roll_constraint: npt.NDArray[np.floating] | None = rc
+        else:
+            self._roll_constraint = None
+
+    # ------------------------------------------------------------------
+    # Properties
+    # ------------------------------------------------------------------
+
+    @property
+    def theta1_rad(self) -> float:
+        """FOV half-angle along the theta1 axis, in radians."""
+        return self._theta1_rad
+
+    @property
+    def theta1_deg(self) -> float:
+        """FOV half-angle along the theta1 axis, in degrees."""
+        return float(np.degrees(self._theta1_rad))
+
+    @property
+    def theta2_rad(self) -> float:
+        """FOV half-angle along the theta2 axis, in radians."""
+        return self._theta2_rad
+
+    @property
+    def theta2_deg(self) -> float:
+        """FOV half-angle along the theta2 axis, in degrees."""
+        return float(np.degrees(self._theta2_rad))
+
+    @property
+    def roll_constraint(self) -> npt.NDArray[np.floating] | None:
+        """Roll constraint unit vector in body frame, or ``None`` if not set."""
+        return self._roll_constraint
+
+    # ------------------------------------------------------------------
+    # Pointing
+    # ------------------------------------------------------------------
+
+    def pointing_eci(self,
+                     r_eci: npt.ArrayLike,
+                     v_eci: npt.ArrayLike,
+                     t: npt.ArrayLike,
+                     ) -> npt.NDArray[np.floating]:
+        """Boresight unit vector(s) in the ECI frame.
+
+        Parameters
+        ----------
+        r_eci : array_like, shape ``(N, 3)`` or ``(3,)``
+            Host spacecraft ECI position(s) (m).
+        v_eci : array_like, shape ``(N, 3)`` or ``(3,)``
+            Host spacecraft ECI velocity(s) (m s⁻¹).
+        t : array_like of datetime64, shape ``(N,)`` or scalar
+            Observation epoch(s).
+
+        Returns
+        -------
+        npt.NDArray[np.floating]
+            Unit boresight vector(s) in ECI, shape ``(N, 3)`` for array
+            inputs or ``(3,)`` for scalar inputs.
+
+        Raises
+        ------
+        RuntimeError
+            If the sensor is in body mode and has not been attached to a
+            spacecraft via :meth:`~missiontools.Spacecraft.add_sensor`.
+        """
+        if self._mode == 'independent':
+            return self._attitude_law.pointing_eci(r_eci, v_eci, t)
+
+        # body mode
+        if self._spacecraft is None:
+            raise RuntimeError(
+                "Sensor must be attached to a Spacecraft via add_sensor() "
+                "before pointing methods can be called in body mode."
+            )
+        return self._spacecraft.attitude_law.rotate_from_body(
+            self._body_vector, r_eci, v_eci, t,
+        )
+
+    def __repr__(self) -> str:
+        if self._mode == 'independent':
+            return (f"RectangularSensor(theta1_deg={self.theta1_deg:.3f}, "
+                    f"theta2_deg={self.theta2_deg:.3f}, "
+                    f"attitude_law={self._attitude_law!r})")
+        return (f"RectangularSensor(theta1_deg={self.theta1_deg:.3f}, "
+                f"theta2_deg={self.theta2_deg:.3f}, "
+                f"mode='body', body_vector={self._body_vector.tolist()})")
