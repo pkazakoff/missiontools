@@ -3,24 +3,28 @@ missiontools.attitude
 =====================
 Spacecraft and sensor pointing laws.
 
-The primary class is :class:`AttitudeLaw`, which stores a full 3-DOF body
-orientation as a unit quaternion ``[w, x, y, z]`` and supports several
-pointing modes:
+The base class is :class:`AbstractAttitudeLaw`, with concrete subclasses
+for each pointing mode:
 
-- **Nadir** — body-z toward the Earth centre (default for all
-  :class:`~missiontools.Spacecraft` instances).
-- **Fixed** — constant body orientation in a chosen reference frame
-  (LVLH, ECI, or ECEF).  The boresight direction and an optional roll
-  angle are specified at construction.
-- **Track** — boresight pointing toward a target
+- :class:`FixedAttitudeLaw` — constant body orientation in a chosen
+  reference frame (LVLH, ECI, or ECEF).  The convenience classmethod
+  :meth:`~FixedAttitudeLaw.nadir` creates the most common configuration
+  (body-z toward the Earth centre).
+- :class:`TrackAttitudeLaw` — boresight pointing toward a target
   :class:`~missiontools.Spacecraft` at every timestep.
+- :class:`CustomAttitudeLaw` — full 3-DOF control via a user-supplied
+  quaternion callback.
+- :class:`LimbAttitudeLaw` — body-frame vector aligned with the ray
+  grazing an offset ellipsoid (limb pointing).
 
-All pointing methods (:meth:`~AttitudeLaw.pointing_eci`,
-:meth:`~AttitudeLaw.pointing_lvlh`, :meth:`~AttitudeLaw.pointing_ecef`)
+All pointing methods (:meth:`~AbstractAttitudeLaw.pointing_eci`,
+:meth:`~AbstractAttitudeLaw.pointing_lvlh`,
+:meth:`~AbstractAttitudeLaw.pointing_ecef`)
 return the **body-z** unit vector expressed in the requested frame.
 
 Optional yaw steering can be enabled via
-:meth:`~AttitudeLaw.yaw_steering` to maximise solar power generation by
+:meth:`~AbstractAttitudeLaw.yaw_steering` on :class:`FixedAttitudeLaw`
+and :class:`TrackAttitudeLaw` to maximise solar power generation by
 rotating the spacecraft about the boresight axis at each timestep.
 
 Planned functionality
@@ -31,6 +35,14 @@ Planned functionality
 - Sensor modelling (star tracker, sun sensor, magnetometer)
 """
 
-from .attitude_law import AttitudeLaw
+from .attitude_law import (AbstractAttitudeLaw,
+                           FixedAttitudeLaw,
+                           TrackAttitudeLaw,
+                           CustomAttitudeLaw,
+                           LimbAttitudeLaw)
 
-__all__ = ['AttitudeLaw']
+__all__ = ['AbstractAttitudeLaw',
+           'FixedAttitudeLaw',
+           'TrackAttitudeLaw',
+           'CustomAttitudeLaw',
+           'LimbAttitudeLaw']

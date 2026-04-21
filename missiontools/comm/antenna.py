@@ -18,7 +18,7 @@ import numpy.typing as npt
 
 from ..orbit.frames import ecef_to_eci, lvlh_to_eci, azel_to_enu, enu_to_ecef
 from ..orbit.constants import EARTH_MEAN_RADIUS
-from ..sensor import _euler_zyx_to_boresight
+from ..sensor.sensor_law import _euler_zyx_to_boresight
 
 
 class AbstractAntenna(ABC):
@@ -30,7 +30,7 @@ class AbstractAntenna(ABC):
 
     **Spacecraft mounting** (provide exactly one):
 
-    - ``attitude_law`` — independent :class:`~missiontools.AttitudeLaw`
+    - ``attitude_law`` — independent :class:`~missiontools.AbstractAttitudeLaw`
     - ``body_vector`` — boresight direction in the spacecraft body frame
     - ``body_euler_deg`` — ``(yaw, pitch, roll)`` ZYX intrinsic Euler
       angles defining the boresight in the body frame
@@ -43,7 +43,7 @@ class AbstractAntenna(ABC):
 
     Parameters
     ----------
-    attitude_law : AttitudeLaw, optional
+    attitude_law : AbstractAttitudeLaw, optional
     body_vector : array_like, shape (3,), optional
     body_euler_deg : tuple of float, optional
     azimuth_deg : float, optional

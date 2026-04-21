@@ -25,9 +25,9 @@ Propagate a sun-synchronous LEO orbit for one day::
 
 Compute ground coverage::
 
-    from missiontools import AoI, Coverage, Sensor
+    from missiontools import AoI, Coverage, ConicSensor
 
-    sensor = Sensor(30.0, body_vector=[0, 0, 1])
+    sensor = ConicSensor(30.0, body_vector=[0, 0, 1])
     sc.add_sensor(sensor)
 
     aoi    = AoI.from_geography('Australia')
@@ -44,12 +44,22 @@ Classes
     Defines a satellite orbit via Keplerian elements.  Factory methods
     :meth:`~Spacecraft.sunsync`, :meth:`~Spacecraft.geostationary`, and
     :meth:`~Spacecraft.heo` cover the most common orbit types.
-:class:`Sensor`
+:class:`AbstractSensor`
+    Abstract base class for instruments attached to a spacecraft.
+:class:`ConicSensor`
     An instrument with a conical field of view, attached to a spacecraft
     via :meth:`~Spacecraft.add_sensor`.
-:class:`AttitudeLaw`
-    Spacecraft or sensor pointing law.  Supports nadir, fixed-frame, and
-    target-tracking modes with optional yaw steering.
+:class:`AbstractAttitudeLaw`
+    Abstract base class for spacecraft/sensor pointing laws.
+:class:`FixedAttitudeLaw`
+    Fixed-frame attitude law (LVLH, ECI, or ECEF).  Includes
+    :meth:`~FixedAttitudeLaw.nadir` convenience constructor.
+:class:`TrackAttitudeLaw`
+    Target-tracking attitude law.
+:class:`CustomAttitudeLaw`
+    User-supplied quaternion callback attitude law.
+:class:`LimbAttitudeLaw`
+    Limb-pointing attitude law.
 :class:`GroundStation`
     A ground station defined in WGS84 geodetic coordinates, with an
     :meth:`~GroundStation.access` method for contact scheduling.
@@ -102,7 +112,10 @@ Submodules
 __version__ = "0.1.0"
 
 __all__ = [
-    'Spacecraft', 'Sensor', 'AttitudeLaw', 'GroundStation', 'AoI', 'Coverage',
+    'Spacecraft', 'AbstractSensor', 'ConicSensor',
+    'AbstractAttitudeLaw', 'FixedAttitudeLaw', 'TrackAttitudeLaw',
+    'CustomAttitudeLaw', 'LimbAttitudeLaw',
+    'GroundStation', 'AoI', 'Coverage',
     'AbstractSolarConfig', 'NormalVectorSolarConfig',
     'ThermalCircuit', 'ThermalResult', 'AbstractThermalConfig', 'NormalVectorThermalConfig',
     'IsotropicAntenna', 'SymmetricAntenna', 'Link',
@@ -110,10 +123,11 @@ __all__ = [
 ]
 
 from .spacecraft import Spacecraft
-from .attitude import AttitudeLaw
+from .attitude import (AbstractAttitudeLaw, FixedAttitudeLaw,
+                       TrackAttitudeLaw, CustomAttitudeLaw, LimbAttitudeLaw)
 from .ground_station import GroundStation
 from .aoi import AoI
-from .sensor import Sensor
+from .sensor import AbstractSensor, ConicSensor
 from .coverage_analysis import Coverage
 from .power import AbstractSolarConfig, NormalVectorSolarConfig
 from .thermal import (ThermalCircuit, ThermalResult,

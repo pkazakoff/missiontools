@@ -366,13 +366,13 @@ class TestAttitudeLaw:
         return Spacecraft(**_KW)
 
     def test_default_is_attitude_law_instance(self):
-        from missiontools import AttitudeLaw
-        assert isinstance(self._sc().attitude_law, AttitudeLaw)
+        from missiontools import AbstractAttitudeLaw
+        assert isinstance(self._sc().attitude_law, AbstractAttitudeLaw)
 
     def test_default_is_nadir(self):
         """Default law must be nadir (body-z = −R̂ in LVLH)."""
-        from missiontools import AttitudeLaw
-        nadir = AttitudeLaw.nadir()
+        from missiontools import FixedAttitudeLaw
+        nadir = FixedAttitudeLaw.nadir()
         sc = self._sc()
         # Both are nadir; check their pre-computed boresight vectors match.
         np.testing.assert_array_equal(
@@ -381,15 +381,15 @@ class TestAttitudeLaw:
         )
 
     def test_can_set_attitude_law(self):
-        from missiontools import AttitudeLaw
+        from missiontools import FixedAttitudeLaw
         sc = self._sc()
-        new_law = AttitudeLaw.fixed([0, 0, 1], 'eci')
+        new_law = FixedAttitudeLaw([0, 0, 1], 'eci')
         sc.attitude_law = new_law
         assert sc.attitude_law is new_law
 
     def test_set_invalid_type_raises(self):
         sc = self._sc()
-        with pytest.raises(TypeError, match='AttitudeLaw'):
+        with pytest.raises(TypeError, match='AbstractAttitudeLaw'):
             sc.attitude_law = 'nadir'
 
     def test_nadir_boresight_points_toward_earth(self):

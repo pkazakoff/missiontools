@@ -1,14 +1,16 @@
 """
-missiontools.sensor
-===================
-Sensor class for instruments attached to a spacecraft.
+missiontools.sensor.sensor_law
+==============================
+Sensor classes for instruments attached to a spacecraft.
 """
 from __future__ import annotations
+
+from abc import ABC, abstractmethod
 
 import numpy as np
 import numpy.typing as npt
 
-from .orbit.frames import eci_to_lvlh, eci_to_ecef
+from ..orbit.frames import eci_to_lvlh, eci_to_ecef
 
 
 def _euler_zyx_to_boresight(
@@ -50,7 +52,94 @@ def _euler_zyx_to_boresight(
     return R.T @ np.array([0., 0., 1.])       # sensor-z in body frame
 
 
-class Sensor:
+class AbstractSensor(ABC):
+    """Abstract base class for instruments attached to a spacecraft.
+
+    Subclasses must implement :meth:`pointing_eci` and :meth:`__repr__`.
+    The concrete :meth:`pointing_lvlh` and :meth:`pointing_ecef` methods are
+    provided here and delegate to :meth:`pointing_eci` plus a frame transform.
+    """
+
+    def __init__(self) -> None:
+        self._spacecraft = None   # set by Spacecraft.add_sensor
+
+    @property
+    def spacecraft(self):
+        """Host spacecraft, or ``None`` if not yet attached."""
+        return self._spacecraft
+
+    @abstractmethod
+    def pointing_eci(self,
+                     r_eci: npt.ArrayLike,
+                     v_eci: npt.ArrayLike,
+                     t: npt.ArrayLike,
+                     ) -> npt.NDArray[np.floating]:
+        """Boresight unit vector(s) in the ECI frame."""
+
+    @abstractmethod
+    def __repr__(self) -> str: ...
+
+    def pointing_lvlh(self,
+                      r_eci: npt.ArrayLike,
+                      v_eci: npt.ArrayLike,
+                      t: npt.ArrayLike,
+                      ) -> npt.NDArray[np.floating]:
+        """Boresight unit vector(s) in the LVLH frame.
+
+        Parameters
+        ----------
+        r_eci : array_like, shape ``(N, 3)`` or ``(3,)``
+            Host spacecraft ECI position(s) (m).
+        v_eci : array_like, shape ``(N, 3)`` or ``(3,)``
+            Host spacecraft ECI velocity(s) (m s⁻¹).
+        t : array_like of datetime64, shape ``(N,)`` or scalar
+            Observation epoch(s).
+
+        Returns
+        -------
+        npt.NDArray[np.floating]
+            Unit boresight vector(s) in LVLH, shape ``(N, 3)`` for array
+            inputs or ``(3,)`` for scalar inputs.
+        """
+        r      = np.asarray(r_eci, dtype=np.float64)
+        scalar = r.ndim == 1
+        r_2d   = np.atleast_2d(r)
+        v_2d   = np.atleast_2d(np.asarray(v_eci, dtype=np.float64))
+        eci    = np.atleast_2d(self.pointing_eci(r_eci, v_eci, t))
+        result = eci_to_lvlh(eci, r_2d, v_2d)
+        return result[0] if scalar else result
+
+    def pointing_ecef(self,
+                      r_eci: npt.ArrayLike,
+                      v_eci: npt.ArrayLike,
+                      t: npt.ArrayLike,
+                      ) -> npt.NDArray[np.floating]:
+        """Boresight unit vector(s) in the ECEF frame.
+
+        Parameters
+        ----------
+        r_eci : array_like, shape ``(N, 3)`` or ``(3,)``
+            Host spacecraft ECI position(s) (m).
+        v_eci : array_like, shape ``(N, 3)`` or ``(3,)``
+            Host spacecraft ECI velocity(s) (m s⁻¹).
+        t : array_like of datetime64, shape ``(N,)`` or scalar
+            Observation epoch(s).
+
+        Returns
+        -------
+        npt.NDArray[np.floating]
+            Unit boresight vector(s) in ECEF, shape ``(N, 3)`` for array
+            inputs or ``(3,)`` for scalar inputs.
+        """
+        r      = np.asarray(r_eci, dtype=np.float64)
+        scalar = r.ndim == 1
+        t_arr  = np.atleast_1d(np.asarray(t, dtype='datetime64[us]'))
+        eci    = np.atleast_2d(self.pointing_eci(r_eci, v_eci, t))
+        result = eci_to_ecef(eci, t_arr)
+        return result[0] if scalar else result
+
+
+class ConicSensor(AbstractSensor):
     """An instrument attached to a spacecraft with a cone-shaped field of view.
 
     Prefer the keyword arguments to select the pointing mode (see below).
@@ -61,8 +150,8 @@ class Sensor:
     half_angle_deg : float
         Half-angle of the sensor's conical field of view (degrees).
         Must satisfy ``0 < half_angle_deg <= 90``.
-    attitude_law : AttitudeLaw, optional
-        Independent :class:`~missiontools.AttitudeLaw` for this sensor,
+    attitude_law : AbstractAttitudeLaw, optional
+        Independent :class:`~missiontools.AbstractAttitudeLaw` for this sensor,
         decoupled from the host spacecraft's attitude.  Mutually exclusive
         with ``body_vector`` and ``body_euler_deg``.
     body_vector : array_like, shape (3,), optional
@@ -86,17 +175,17 @@ class Sensor:
     --------
     Nadir-pointing sensor, 10° half-angle::
 
-        from missiontools import Sensor, AttitudeLaw
-        sensor = Sensor(10.0, attitude_law=AttitudeLaw.nadir())
+        from missiontools import ConicSensor, FixedAttitudeLaw
+        sensor = ConicSensor(10.0, attitude_law=FixedAttitudeLaw.nadir())
 
     Sensor body-mounted along spacecraft body-z (boresight = nadir for a
     nadir spacecraft), 5° half-angle::
 
-        sensor = Sensor(5.0, body_vector=[0, 0, 1])
+        sensor = ConicSensor(5.0, body_vector=[0, 0, 1])
 
     Sensor tilted 30° in pitch from body-z::
 
-        sensor = Sensor(15.0, body_euler_deg=(0, 30, 0))
+        sensor = ConicSensor(15.0, body_euler_deg=(0, 30, 0))
     """
 
     def __init__(
@@ -107,6 +196,8 @@ class Sensor:
             body_vector: npt.ArrayLike | None = None,
             body_euler_deg: tuple[float, float, float] | None = None,
     ):
+        super().__init__()
+
         # --- validate half-angle -------------------------------------------
         half_angle_deg = float(half_angle_deg)
         if not (0.0 < half_angle_deg <= 90.0):
@@ -130,13 +221,11 @@ class Sensor:
             )
 
         # --- store mode-specific state --------------------------------------
-        self._spacecraft = None   # set by Spacecraft.add_sensor
-
         if attitude_law is not None:
-            from .attitude import AttitudeLaw
-            if not isinstance(attitude_law, AttitudeLaw):
+            from ..attitude import AbstractAttitudeLaw
+            if not isinstance(attitude_law, AbstractAttitudeLaw):
                 raise TypeError(
-                    f"attitude_law must be an AttitudeLaw instance, "
+                    f"attitude_law must be an AbstractAttitudeLaw instance, "
                     f"got {type(attitude_law).__name__!r}"
                 )
             self._mode         = 'independent'
@@ -177,13 +266,8 @@ class Sensor:
         """FOV cone half-angle in degrees."""
         return float(np.degrees(self._half_angle_rad))
 
-    @property
-    def spacecraft(self):
-        """Host spacecraft, or ``None`` if not yet attached."""
-        return self._spacecraft
-
     # ------------------------------------------------------------------
-    # Pointing methods
+    # Pointing
     # ------------------------------------------------------------------
 
     def pointing_eci(self,
@@ -231,67 +315,9 @@ class Sensor:
             self._body_vector, r_eci, v_eci, t,
         )
 
-    def pointing_lvlh(self,
-                      r_eci: npt.ArrayLike,
-                      v_eci: npt.ArrayLike,
-                      t: npt.ArrayLike,
-                      ) -> npt.NDArray[np.floating]:
-        """Boresight unit vector(s) in the LVLH frame.
-
-        Parameters
-        ----------
-        r_eci : array_like, shape ``(N, 3)`` or ``(3,)``
-            Host spacecraft ECI position(s) (m).
-        v_eci : array_like, shape ``(N, 3)`` or ``(3,)``
-            Host spacecraft ECI velocity(s) (m s⁻¹).
-        t : array_like of datetime64, shape ``(N,)`` or scalar
-            Observation epoch(s).
-
-        Returns
-        -------
-        npt.NDArray[np.floating]
-            Unit boresight vector(s) in LVLH, shape ``(N, 3)`` for array
-            inputs or ``(3,)`` for scalar inputs.
-        """
+    def __repr__(self) -> str:
         if self._mode == 'independent':
-            return self._attitude_law.pointing_lvlh(r_eci, v_eci, t)
-
-        r     = np.asarray(r_eci, dtype=np.float64)
-        scalar = r.ndim == 1
-        r_2d  = np.atleast_2d(r)
-        v_2d  = np.atleast_2d(np.asarray(v_eci, dtype=np.float64))
-        eci   = np.atleast_2d(self.pointing_eci(r_eci, v_eci, t))
-        result = eci_to_lvlh(eci, r_2d, v_2d)
-        return result[0] if scalar else result
-
-    def pointing_ecef(self,
-                      r_eci: npt.ArrayLike,
-                      v_eci: npt.ArrayLike,
-                      t: npt.ArrayLike,
-                      ) -> npt.NDArray[np.floating]:
-        """Boresight unit vector(s) in the ECEF frame.
-
-        Parameters
-        ----------
-        r_eci : array_like, shape ``(N, 3)`` or ``(3,)``
-            Host spacecraft ECI position(s) (m).
-        v_eci : array_like, shape ``(N, 3)`` or ``(3,)``
-            Host spacecraft ECI velocity(s) (m s⁻¹).
-        t : array_like of datetime64, shape ``(N,)`` or scalar
-            Observation epoch(s).
-
-        Returns
-        -------
-        npt.NDArray[np.floating]
-            Unit boresight vector(s) in ECEF, shape ``(N, 3)`` for array
-            inputs or ``(3,)`` for scalar inputs.
-        """
-        if self._mode == 'independent':
-            return self._attitude_law.pointing_ecef(r_eci, v_eci, t)
-
-        r     = np.asarray(r_eci, dtype=np.float64)
-        scalar = r.ndim == 1
-        t_arr = np.atleast_1d(np.asarray(t, dtype='datetime64[us]'))
-        eci   = np.atleast_2d(self.pointing_eci(r_eci, v_eci, t))
-        result = eci_to_ecef(eci, t_arr)
-        return result[0] if scalar else result
+            return (f"ConicSensor(half_angle_deg={self.half_angle_deg:.3f}, "
+                    f"attitude_law={self._attitude_law!r})")
+        return (f"ConicSensor(half_angle_deg={self.half_angle_deg:.3f}, "
+                f"mode='body', body_vector={self._body_vector.tolist()})")
