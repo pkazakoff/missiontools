@@ -700,6 +700,23 @@ class TestSymmetricAntennaFactories:
                                              body_vector=[0, 0, 1])
             assert ant.angles_deg[-1] == 180.0
 
+    def test_s465_gmax_override(self):
+        """gmax_dbi overrides the computed peak gain for both variants."""
+        D, f, override = 3.0, 14e9, 50.0
+        for mlm in (False, True):
+            ant = SymmetricAntenna.from_s465(D, f, main_lobe_model=mlm,
+                                             gmax_dbi=override,
+                                             body_vector=[0, 0, 1])
+            assert abs(ant.gains_dbi[0] - override) < 0.01
+
+    def test_s465_gmax_override_differs_from_default(self):
+        """gmax_dbi=50 produces a different pattern than the η=0.7 default."""
+        D, f = 3.0, 14e9
+        ant_default = SymmetricAntenna.from_s465(D, f, body_vector=[0, 0, 1])
+        ant_override = SymmetricAntenna.from_s465(D, f, gmax_dbi=50.0,
+                                                  body_vector=[0, 0, 1])
+        assert ant_default.gains_dbi[0] != ant_override.gains_dbi[0]
+
 
 # ===================================================================
 # Top-level imports

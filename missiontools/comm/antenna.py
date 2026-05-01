@@ -620,6 +620,7 @@ class SymmetricAntenna(AbstractAntenna):
         diameter: float,
         frequency: float,
         main_lobe_model: bool = False,
+        gmax_dbi: float | None = None,
         **kwargs,
     ) -> 'SymmetricAntenna':
         """ITU-R S.465 reference Earth station antenna pattern.
@@ -637,6 +638,11 @@ class SymmetricAntenna(AbstractAntenna):
             with a flat plateau at *G*_max.  If *True*, the smooth
             parabolic main-lobe extension from APEREC013V01 is used,
             producing a continuous pattern from boresight to 180°.
+        gmax_dbi : float, optional
+            Peak on-axis gain (dBi).  When provided, overrides the value
+            computed from *diameter* and *frequency* (which assumes η = 0.7).
+            This matches the behaviour of tools such as ANSYS STK that
+            accept *G*_max as a direct input.
         **kwargs
             Mounting keyword arguments forwarded to
             :class:`SymmetricAntenna`.
@@ -658,9 +664,11 @@ class SymmetricAntenna(AbstractAntenna):
         lam = _C / float(frequency)
         dl = D / lam  # D/λ
 
-        eta = 0.7  # BR-software default efficiency
-        g_peak_lin = eta * (np.pi * dl) ** 2
-        g_peak_dbi = 10.0 * np.log10(g_peak_lin)
+        if gmax_dbi is not None:
+            g_peak_dbi = float(gmax_dbi)
+        else:
+            eta = 0.7  # BR-software default efficiency
+            g_peak_dbi = 10.0 * np.log10(eta * (np.pi * dl) ** 2)
 
         if main_lobe_model:
             # APEREC013V01 smooth main-lobe extension
