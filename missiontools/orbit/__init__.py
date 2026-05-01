@@ -30,6 +30,8 @@ Frame transformations
 :func:`geodetic_to_ecef`
     Convert WGS84 geodetic coordinates (latitude, longitude, altitude) to
     ECEF Cartesian.
+:func:`ecef_to_geodetic`
+    Convert ECEF Cartesian coordinates to WGS84 geodetic (Bowring's method).
 :func:`eci_to_lvlh` / :func:`lvlh_to_eci`
     Rotate vectors between ECI and the LVLH (RSW) frame, defined with
     **x̂** = radial, **ŷ** = along-track, **ẑ** = orbit-normal.
@@ -63,22 +65,50 @@ Planned functionality
 - Ground track computation
 """
 
-from .propagation import (propagate_analytical, sun_synchronous_inclination,
-                          sun_synchronous_orbit, geostationary_orbit,
-                          highly_elliptical_orbit)
-from .frames import (gmst, eci_to_ecef, ecef_to_eci, geodetic_to_ecef,
-                     eci_to_lvlh, lvlh_to_eci, sun_vec_eci,
-                     azel_to_enu, enu_to_ecef)
-from .access import (earth_access, earth_access_intervals,
-                     space_to_space_access, space_to_space_access_intervals)
+from .propagation import (
+    propagate_analytical,
+    sun_synchronous_inclination,
+    sun_synchronous_orbit,
+    geostationary_orbit,
+    highly_elliptical_orbit,
+)
+from .frames import (
+    gmst,
+    eci_to_ecef,
+    ecef_to_eci,
+    geodetic_to_ecef,
+    ecef_to_geodetic,
+    eci_to_lvlh,
+    lvlh_to_eci,
+    sun_vec_eci,
+    azel_to_enu,
+    enu_to_ecef,
+)
+from .access import (
+    earth_access,
+    earth_access_intervals,
+    space_to_space_access,
+    space_to_space_access_intervals,
+)
 from .shadow import in_sunlight
 
 __all__ = [
-    'propagate_analytical', 'sun_synchronous_inclination', 'sun_synchronous_orbit',
-    'geostationary_orbit', 'highly_elliptical_orbit',
-    'gmst', 'eci_to_ecef', 'ecef_to_eci', 'geodetic_to_ecef',
-    'eci_to_lvlh', 'lvlh_to_eci', 'sun_vec_eci',
-    'earth_access', 'earth_access_intervals',
-    'space_to_space_access', 'space_to_space_access_intervals',
-    'in_sunlight',
+    "propagate_analytical",
+    "sun_synchronous_inclination",
+    "sun_synchronous_orbit",
+    "geostationary_orbit",
+    "highly_elliptical_orbit",
+    "gmst",
+    "eci_to_ecef",
+    "ecef_to_eci",
+    "geodetic_to_ecef",
+    "ecef_to_geodetic",
+    "eci_to_lvlh",
+    "lvlh_to_eci",
+    "sun_vec_eci",
+    "earth_access",
+    "earth_access_intervals",
+    "space_to_space_access",
+    "space_to_space_access_intervals",
+    "in_sunlight",
 ]

@@ -68,6 +68,22 @@ Classes
 :class:`SpaceGroundAccessCondition`
     Condition that holds when a spacecraft is above the horizon (or a
     specified minimum elevation) as seen from a ground station.
+:class:`SunlightCondition`
+    Condition that holds when an object (spacecraft or ground station) is
+    in sunlight.
+:class:`SubSatelliteRegionCondition`
+    Condition that holds when a spacecraft's sub-satellite point is inside
+    an :class:`AoI`.
+:class:`VisibilityCondition`
+    Condition that holds when two objects have unobstructed line-of-sight.
+:class:`AndCondition`
+    Logical AND of two conditions.  Also available via the ``&`` operator.
+:class:`OrCondition`
+    Logical OR of two conditions.  Also available via the ``|`` operator.
+:class:`NotCondition`
+    Logical NOT of a condition.  Also available via the ``~`` operator.
+:class:`XorCondition`
+    Logical XOR of two conditions.  Also available via the ``^`` operator.
 :class:`GroundStation`
     A ground station defined in WGS84 geodetic coordinates, with an
     :meth:`~GroundStation.access` method for contact scheduling.
@@ -122,28 +138,71 @@ Submodules
 __version__ = "0.1.0"
 
 __all__ = [
-    'Spacecraft', 'AbstractSensor', 'ConicSensor',
-    'AbstractAttitudeLaw', 'FixedAttitudeLaw', 'TrackAttitudeLaw',
-    'CustomAttitudeLaw', 'LimbAttitudeLaw', 'ConditionAttitudeLaw',
-    'AbstractCondition', 'SpaceGroundAccessCondition',
-    'GroundStation', 'AoI', 'Coverage',
-    'AbstractSolarConfig', 'NormalVectorSolarConfig',
-    'ThermalCircuit', 'ThermalResult', 'AbstractThermalConfig', 'NormalVectorThermalConfig',
-    'IsotropicAntenna', 'SymmetricAntenna', 'Link',
-    'clear_cache', 'set_cache_limit', 'cache_info',
+    "Spacecraft",
+    "AbstractSensor",
+    "ConicSensor",
+    "AbstractAttitudeLaw",
+    "FixedAttitudeLaw",
+    "TrackAttitudeLaw",
+    "CustomAttitudeLaw",
+    "LimbAttitudeLaw",
+    "ConditionAttitudeLaw",
+    "AbstractCondition",
+    "SpaceGroundAccessCondition",
+    "SunlightCondition",
+    "SubSatelliteRegionCondition",
+    "VisibilityCondition",
+    "AndCondition",
+    "OrCondition",
+    "NotCondition",
+    "XorCondition",
+    "GroundStation",
+    "AoI",
+    "Coverage",
+    "AbstractSolarConfig",
+    "NormalVectorSolarConfig",
+    "ThermalCircuit",
+    "ThermalResult",
+    "AbstractThermalConfig",
+    "NormalVectorThermalConfig",
+    "IsotropicAntenna",
+    "SymmetricAntenna",
+    "Link",
+    "clear_cache",
+    "set_cache_limit",
+    "cache_info",
 ]
 
 from .spacecraft import Spacecraft
-from .attitude import (AbstractAttitudeLaw, FixedAttitudeLaw,
-                       TrackAttitudeLaw, CustomAttitudeLaw, LimbAttitudeLaw,
-                       ConditionAttitudeLaw)
-from .condition import AbstractCondition, SpaceGroundAccessCondition
+from .attitude import (
+    AbstractAttitudeLaw,
+    FixedAttitudeLaw,
+    TrackAttitudeLaw,
+    CustomAttitudeLaw,
+    LimbAttitudeLaw,
+    ConditionAttitudeLaw,
+)
+from .condition import (
+    AbstractCondition,
+    SpaceGroundAccessCondition,
+    SunlightCondition,
+    SubSatelliteRegionCondition,
+    VisibilityCondition,
+    AndCondition,
+    OrCondition,
+    NotCondition,
+    XorCondition,
+)
 from .ground_station import GroundStation
 from .aoi import AoI
 from .sensor import AbstractSensor, ConicSensor
 from .coverage_analysis import Coverage
 from .power import AbstractSolarConfig, NormalVectorSolarConfig
-from .thermal import (ThermalCircuit, ThermalResult,
-                      AbstractThermalConfig, NormalVectorThermalConfig)
+from .thermal import (
+    ThermalCircuit,
+    ThermalResult,
+    AbstractThermalConfig,
+    NormalVectorThermalConfig,
+)
 from .comm import IsotropicAntenna, SymmetricAntenna, Link
 from .cache import clear_cache, set_cache_limit, cache_info

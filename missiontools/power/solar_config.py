@@ -28,9 +28,7 @@ class AbstractSolarConfig(ABC):
 
     def __init__(self, efficiency: float) -> None:
         if not 0 < efficiency <= 1:
-            raise ValueError(
-                f"efficiency must be in (0, 1], got {efficiency}"
-            )
+            raise ValueError(f"efficiency must be in (0, 1], got {efficiency}")
         self._efficiency = float(efficiency)
         self._spacecraft = None
 
@@ -142,13 +140,10 @@ class NormalVectorSolarConfig(AbstractSolarConfig):
         areas_arr = np.asarray(areas, dtype=np.float64)
 
         if normals.ndim != 2 or normals.shape[1] != 3:
-            raise ValueError(
-                f"normal_vecs must have shape (M, 3), got {normals.shape}"
-            )
+            raise ValueError(f"normal_vecs must have shape (M, 3), got {normals.shape}")
         if areas_arr.ndim != 1 or len(areas_arr) != len(normals):
             raise ValueError(
-                f"areas must have shape ({len(normals)},), "
-                f"got {areas_arr.shape}"
+                f"areas must have shape ({len(normals)},), got {areas_arr.shape}"
             )
         if np.any(areas_arr <= 0):
             raise ValueError("All panel areas must be positive.")
@@ -157,8 +152,8 @@ class NormalVectorSolarConfig(AbstractSolarConfig):
         if np.any(norms == 0):
             raise ValueError("Normal vectors must be non-zero.")
 
-        self._normals = normals / norms       # (M, 3) unit normals
-        self._areas = areas_arr               # (M,)
+        self._normals = normals / norms  # (M, 3) unit normals
+        self._areas = areas_arr  # (M,)
 
     @property
     def normals(self) -> npt.NDArray[np.floating]:
@@ -222,17 +217,17 @@ class NormalVectorSolarConfig(AbstractSolarConfig):
         sc = self._spacecraft
 
         state = sc.propagate(t_start, t_end, step)
-        t = state['t']
-        r = state['r']                                # (N, 3)
-        v = state['v']                                # (N, 3)
+        t = state["t"]
+        r = state["r"]  # (N, 3)
+        v = state["v"]  # (N, 3)
 
         if len(t) == 0:
             return {
-                't': np.array([], dtype='datetime64[us]'),
-                'power': np.empty(0, dtype=np.float64),
+                "t": np.array([], dtype="datetime64[us]"),
+                "power": np.empty(0, dtype=np.float64),
             }
 
-        sun = sun_vec_eci(t)                          # (N, 3)
+        sun = sun_vec_eci(t)  # (N, 3)
         lit = in_sunlight(r, t, body_radius=sc.central_body_radius)  # (N,)
 
         N = len(t)
@@ -241,16 +236,19 @@ class NormalVectorSolarConfig(AbstractSolarConfig):
         for k, (normal, area) in enumerate(zip(self._normals, self._areas)):
             # Transform body-frame normal to ECI
             n_eci = sc.attitude_law.rotate_from_body(
-                normal, r, v, t,
-            )                                         # (N, 3)
-            n_eci_2d = np.atleast_2d(n_eci)           # ensure (N, 3)
-            cos_angle = np.einsum('ij,ij->i', n_eci_2d, np.atleast_2d(sun))
+                normal,
+                r,
+                v,
+                t,
+            )  # (N, 3)
+            n_eci_2d = np.atleast_2d(n_eci)  # ensure (N, 3)
+            cos_angle = np.einsum("ij,ij->i", n_eci_2d, np.atleast_2d(sun))
             power += area * np.maximum(cos_angle, 0.0)
 
         power *= irradiance * self._efficiency
         power[~lit] = 0.0
 
-        return {'t': t, 'power': power}
+        return {"t": t, "power": power}
 
     def optimal_angle(self, rotation_axis: npt.ArrayLike) -> float:
         """Return the rotation angle that maximises total projected panel area.
@@ -294,9 +292,9 @@ class NormalVectorSolarConfig(AbstractSolarConfig):
         # Sun comes FROM -d, so contribution = max(-d · normal, 0)
         d = np.outer(np.cos(thetas), u) + np.outer(np.sin(thetas), v)  # (S, 3)
         # dot[s, m] = (-d[s]) · normal[m] = -d[s] @ normals.T
-        dots = -d @ self._normals.T                                      # (S, M)
+        dots = -d @ self._normals.T  # (S, M)
         # Weighted sum: (S, M) clipped × areas (M,) → (S,)
-        total = np.maximum(dots, 0.0) @ self._areas                     # (S,)
+        total = np.maximum(dots, 0.0) @ self._areas  # (S,)
 
         return float(thetas[np.argmax(total)])
 
@@ -327,15 +325,14 @@ class NormalVectorSolarConfig(AbstractSolarConfig):
         sc = self._spacecraft
 
         mu = sc.central_body_mu
-        period_s = 2 * np.pi * np.sqrt(sc.a ** 3 / mu)
-        period = np.timedelta64(int(period_s * 1e6), 'us')
+        period_s = 2 * np.pi * np.sqrt(sc.a**3 / mu)
+        period = np.timedelta64(int(period_s * 1e6), "us")
 
-        t0 = sc.epoch if start_time is None else np.asarray(
-            start_time, dtype='datetime64[us]',
-        ).item()
+        t0_src = sc.epoch if start_time is None else start_time
+        t0 = np.asarray(t0_src, dtype="datetime64[us]")
 
         step_s = min(30.0, period_s / 360.0)
-        step = np.timedelta64(int(step_s * 1e6), 'us')
+        step = np.timedelta64(int(step_s * 1e6), "us")
 
         result = self.generation(t0, t0 + period, step)
-        return float(np.mean(result['power']))
+        return float(np.mean(result["power"]))
