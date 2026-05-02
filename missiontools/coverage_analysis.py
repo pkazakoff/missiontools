@@ -16,6 +16,7 @@ from .coverage import (
     coverage_fraction_multi,
     pointwise_coverage_multi,
     collect_access_intervals_multi,
+    CoverageConstraints,
 )
 
 _DEFAULT_STEP = np.timedelta64(30, "s")
@@ -199,6 +200,12 @@ class Coverage:
         )
         return sza_max, sza_min
 
+    def _constraints(self) -> CoverageConstraints:
+        sza_max, sza_min = self._sza_rad()
+        return CoverageConstraints.from_angles(
+            np.radians(self._el_min_deg), sza_max, sza_min
+        )
+
     # ------------------------------------------------------------------
     # Coverage methods
     # ------------------------------------------------------------------
@@ -235,6 +242,7 @@ class Coverage:
             :func:`~missiontools.coverage.coverage_fraction`.
         """
         sza_max, sza_min = self._sza_rad()
+        constraints = self._constraints()
         return coverage_fraction_multi(
             self._aoi.lat_rad,
             self._aoi.lon_rad,
@@ -242,9 +250,7 @@ class Coverage:
             t_start,
             t_end,
             alt,
-            np.radians(self._el_min_deg),
-            sza_max,
-            sza_min,
+            constraints,
             max_step,
             batch_size,
         )
@@ -290,6 +296,7 @@ class Coverage:
             times (s).  ``nan`` if no point has two or more accesses.
         """
         sza_max, sza_min = self._sza_rad()
+        constraints = self._constraints()
         lat = self._aoi.lat_rad
         lon = self._aoi.lon_rad
         M = len(lat)
@@ -301,9 +308,7 @@ class Coverage:
             t_start,
             t_end,
             alt,
-            np.radians(self._el_min_deg),
-            sza_max,
-            sza_min,
+            constraints,
             max_step,
             batch_size,
             close_at_end=False,
@@ -366,6 +371,7 @@ class Coverage:
             :func:`~missiontools.coverage.pointwise_coverage`.
         """
         sza_max, sza_min = self._sza_rad()
+        constraints = self._constraints()
         return pointwise_coverage_multi(
             self._aoi.lat_rad,
             self._aoi.lon_rad,
@@ -373,9 +379,7 @@ class Coverage:
             t_start,
             t_end,
             alt,
-            np.radians(self._el_min_deg),
-            sza_max,
-            sza_min,
+            constraints,
             max_step,
             batch_size,
         )
@@ -411,6 +415,7 @@ class Coverage:
             See :func:`~missiontools.coverage.access_pointwise`.
         """
         sza_max, sza_min = self._sza_rad()
+        constraints = self._constraints()
         return collect_access_intervals_multi(
             self._aoi.lat_rad,
             self._aoi.lon_rad,
@@ -418,9 +423,7 @@ class Coverage:
             t_start,
             t_end,
             alt,
-            np.radians(self._el_min_deg),
-            sza_max,
-            sza_min,
+            constraints,
             max_step,
             batch_size,
             close_at_end=True,
@@ -457,6 +460,7 @@ class Coverage:
             point *m*.  See :func:`~missiontools.coverage.revisit_pointwise`.
         """
         sza_max, sza_min = self._sza_rad()
+        constraints = self._constraints()
         intervals = collect_access_intervals_multi(
             self._aoi.lat_rad,
             self._aoi.lon_rad,
@@ -464,9 +468,7 @@ class Coverage:
             t_start,
             t_end,
             alt,
-            np.radians(self._el_min_deg),
-            sza_max,
-            sza_min,
+            constraints,
             max_step,
             batch_size,
             close_at_end=False,

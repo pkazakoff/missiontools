@@ -1,10 +1,8 @@
 import numpy as np
 import numpy.typing as npt
 
-from .constants import EARTH_SEMI_MAJOR_AXIS, EARTH_INVERSE_FLATTENING
+from .constants import EARTH_SEMI_MAJOR_AXIS, EARTH_INVERSE_FLATTENING, _J2000_US
 
-# J2000.0 epoch in UTC (≈ UT1 to < 1 s; TT leads UT1 by ~69 s and should NOT be used)
-_J2000_US = np.datetime64("2000-01-01T12:00:00", "us")
 _SECONDS_PER_JULIAN_CENTURY = 36525.0 * 86400.0
 
 
@@ -46,6 +44,34 @@ def gmst(t: npt.NDArray[np.datetime64]) -> npt.NDArray[np.floating]:
 
     # Seconds of time → radians (1 s = 1/240 °), wrapped to [0, 2π)
     return (np.deg2rad(theta / 240.0)) % (2 * np.pi)
+
+
+def eci_ecef_rotation(
+    t: npt.NDArray[np.datetime64],
+) -> npt.NDArray[np.floating]:
+    """Build the (N, 3, 3) ECI→ECEF rotation matrix from GMST.
+
+    Parameters
+    ----------
+    t : npt.NDArray[np.datetime64]
+        UTC/UT1 observation times as ``datetime64[us]``, shape ``(N,)`` or
+        scalar.
+
+    Returns
+    -------
+    npt.NDArray[np.floating]
+        Rotation matrices, shape ``(N, 3, 3)``.  Transpose to get the
+        ECEF→ECI rotation.
+    """
+    theta = gmst(t)
+    theta = np.atleast_1d(theta)
+
+    cos_t, sin_t = np.cos(theta), np.sin(theta)
+    z, o = np.zeros_like(theta), np.ones_like(theta)
+
+    Rz = np.array([[cos_t, sin_t, z], [-sin_t, cos_t, z], [z, z, o]]).transpose(2, 0, 1)
+
+    return Rz
 
 
 def eci_to_ecef(
@@ -377,6 +403,22 @@ def enu_to_ecef(
     )  # (3, 3)
 
     result = (R @ np.atleast_2d(vecs).T).T  # (N, 3)
+    return result[0] if scalar else result
+
+
+def geodetic_up(
+    lat: float | npt.NDArray[np.floating],
+    lon: float | npt.NDArray[np.floating],
+) -> npt.NDArray[np.floating]:
+    lat = np.asarray(lat, dtype=np.float64)
+    lon = np.asarray(lon, dtype=np.float64)
+    scalar = lat.ndim == 0 and lon.ndim == 0
+    lat = np.atleast_1d(lat)
+    lon = np.atleast_1d(lon)
+    result = np.stack(
+        [np.cos(lat) * np.cos(lon), np.cos(lat) * np.sin(lon), np.sin(lat)],
+        axis=-1,
+    )
     return result[0] if scalar else result
 
 

@@ -5,11 +5,15 @@ from dataclasses import dataclass
 import numpy as np
 
 from .orbit.constants import EARTH_MU, EARTH_J2, EARTH_SEMI_MAJOR_AXIS
-from .orbit.propagation import (propagate_analytical, sun_synchronous_orbit,
-                                 geostationary_orbit, highly_elliptical_orbit)
+from .cache import cached_propagate_analytical
+from .orbit.propagation import (
+    sun_synchronous_orbit,
+    geostationary_orbit,
+    highly_elliptical_orbit,
+)
 from .attitude import AbstractAttitudeLaw, FixedAttitudeLaw
 
-_VALID_PROPAGATORS = frozenset({'twobody', 'j2'})
+_VALID_PROPAGATORS = frozenset({"twobody", "j2"})
 
 
 @dataclass
@@ -77,16 +81,16 @@ class Spacecraft:
         sc = Spacecraft.from_dict(params, propagator_type='j2')
     """
 
-    a:                   float
-    e:                   float
-    i:                   float
-    raan:                float
-    arg_p:               float
-    ma:                  float
-    epoch:               np.datetime64
-    propagator_type:     str   = 'twobody'
-    central_body_mu:     float = EARTH_MU
-    central_body_j2:     float = EARTH_J2
+    a: float
+    e: float
+    i: float
+    raan: float
+    arg_p: float
+    ma: float
+    epoch: np.datetime64
+    propagator_type: str = "twobody"
+    central_body_mu: float = EARTH_MU
+    central_body_j2: float = EARTH_J2
     central_body_radius: float = EARTH_SEMI_MAJOR_AXIS
 
     def __post_init__(self):
@@ -95,7 +99,7 @@ class Spacecraft:
                 f"propagator_type must be one of {sorted(_VALID_PROPAGATORS)}, "
                 f"got {self.propagator_type!r}"
             )
-        self.epoch = np.asarray(self.epoch, dtype='datetime64[us]').item()
+        self.epoch = np.asarray(self.epoch, dtype="datetime64[us]").item()
         self._attitude_law: AbstractAttitudeLaw = FixedAttitudeLaw.nadir()
         self._sensors: list = []
         self._solar_configs: list = []
@@ -142,12 +146,17 @@ class Spacecraft:
         TypeError
             If ``config`` is not an :class:`~missiontools.power.AbstractSolarConfig` instance.
         """
-        from .power.solar_config import AbstractSolarConfig  # local import avoids circular dep
+        from .power.solar_config import (
+            AbstractSolarConfig,
+        )  # local import avoids circular dep
+
         if not isinstance(config, AbstractSolarConfig):
             raise TypeError(
                 f"config must be an AbstractSolarConfig instance, "
                 f"got {type(config).__name__!r}"
             )
+        if config._spacecraft is not None:
+            raise ValueError("Solar config is already attached to a spacecraft.")
         config._spacecraft = self
         self._solar_configs.append(config)
 
@@ -174,11 +183,14 @@ class Spacecraft:
             :class:`~missiontools.thermal.AbstractThermalConfig` instance.
         """
         from .thermal.thermal_config import AbstractThermalConfig
+
         if not isinstance(config, AbstractThermalConfig):
             raise TypeError(
                 f"config must be an AbstractThermalConfig instance, "
                 f"got {type(config).__name__!r}"
             )
+        if config._spacecraft is not None:
+            raise ValueError("Thermal config is already attached to a spacecraft.")
         config._spacecraft = self
         self._thermal_configs.append(config)
 
@@ -206,15 +218,14 @@ class Spacecraft:
             If the antenna is already attached to a GroundStation.
         """
         from .comm.antenna import AbstractAntenna
+
         if not isinstance(antenna, AbstractAntenna):
             raise TypeError(
                 f"antenna must be an AbstractAntenna instance, "
                 f"got {type(antenna).__name__!r}"
             )
         if antenna._ground_station is not None:
-            raise ValueError(
-                "Antenna is already attached to a GroundStation."
-            )
+            raise ValueError("Antenna is already attached to a GroundStation.")
         antenna._spacecraft = self
         self._antennas.append(antenna)
 
@@ -235,11 +246,14 @@ class Spacecraft:
             If ``sensor`` is not an :class:`~missiontools.AbstractSensor` instance.
         """
         from .sensor import AbstractSensor  # local import avoids circular dep
+
         if not isinstance(sensor, AbstractSensor):
             raise TypeError(
                 f"sensor must be an AbstractSensor instance, "
                 f"got {type(sensor).__name__!r}"
             )
+        if sensor._spacecraft is not None:
+            raise ValueError("Sensor is already attached to a spacecraft.")
         sensor._spacecraft = self
         self._sensors.append(sensor)
 
@@ -254,21 +268,20 @@ class Spacecraft:
                               propagator_type=sc.propagator_type)
         """
         return {
-            'epoch':               self.epoch,
-            'a':                   self.a,
-            'e':                   self.e,
-            'i':                   self.i,
-            'raan':                self.raan,
-            'arg_p':               self.arg_p,
-            'ma':                  self.ma,
-            'central_body_mu':     self.central_body_mu,
-            'central_body_j2':     self.central_body_j2,
-            'central_body_radius': self.central_body_radius,
+            "epoch": self.epoch,
+            "a": self.a,
+            "e": self.e,
+            "i": self.i,
+            "raan": self.raan,
+            "arg_p": self.arg_p,
+            "ma": self.ma,
+            "central_body_mu": self.central_body_mu,
+            "central_body_j2": self.central_body_j2,
+            "central_body_radius": self.central_body_radius,
         }
 
     @classmethod
-    def from_dict(cls, params: dict,
-                  propagator_type: str = 'twobody') -> Spacecraft:
+    def from_dict(cls, params: dict, propagator_type: str = "twobody") -> Spacecraft:
         """Construct from a ``keplerian_params`` dict.
 
         Accepts dicts produced by :func:`~missiontools.orbit.sun_synchronous_orbit`
@@ -286,24 +299,26 @@ class Spacecraft:
             ``'twobody'`` (default) or ``'j2'``.
         """
         return cls(
-            a                   = params['a'],
-            e                   = params['e'],
-            i                   = params['i'],
-            raan                = params['raan'],
-            arg_p               = params['arg_p'],
-            ma                  = params['ma'],
-            epoch               = params['epoch'],
-            propagator_type     = propagator_type,
-            central_body_mu     = params.get('central_body_mu',     EARTH_MU),
-            central_body_j2     = params.get('central_body_j2',     EARTH_J2),
-            central_body_radius = params.get('central_body_radius', EARTH_SEMI_MAJOR_AXIS),
+            a=params["a"],
+            e=params["e"],
+            i=params["i"],
+            raan=params["raan"],
+            arg_p=params["arg_p"],
+            ma=params["ma"],
+            epoch=params["epoch"],
+            propagator_type=propagator_type,
+            central_body_mu=params.get("central_body_mu", EARTH_MU),
+            central_body_j2=params.get("central_body_j2", EARTH_J2),
+            central_body_radius=params.get(
+                "central_body_radius", EARTH_SEMI_MAJOR_AXIS
+            ),
         )
 
     def propagate(
-            self,
-            t_start: np.datetime64,
-            t_end:   np.datetime64,
-            step:    np.timedelta64,
+        self,
+        t_start: np.datetime64,
+        t_end: np.datetime64,
+        step: np.timedelta64,
     ) -> dict:
         """Propagate the orbit and return ECI state vectors.
 
@@ -325,26 +340,27 @@ class Spacecraft:
 
             ``v`` : ``(N, 3)`` float — ECI velocity vectors (m s⁻¹).
         """
-        t_start  = np.asarray(t_start, dtype='datetime64[us]')
-        t_end    = np.asarray(t_end,   dtype='datetime64[us]')
-        total_us = int((t_end - t_start) / np.timedelta64(1, 'us'))
-        step_us  = int(step / np.timedelta64(1, 'us'))
+        t_start = np.asarray(t_start, dtype="datetime64[us]")
+        t_end = np.asarray(t_end, dtype="datetime64[us]")
+        total_us = int((t_end - t_start) / np.timedelta64(1, "us"))
+        step_us = int(step / np.timedelta64(1, "us"))
 
         if total_us <= 0 or step_us <= 0:
             return {
-                't': np.array([], dtype='datetime64[us]'),
-                'r': np.empty((0, 3), dtype=np.float64),
-                'v': np.empty((0, 3), dtype=np.float64),
+                "t": np.array([], dtype="datetime64[us]"),
+                "r": np.empty((0, 3), dtype=np.float64),
+                "v": np.empty((0, 3), dtype=np.float64),
             }
 
         offs = np.arange(0, total_us + 1, step_us, dtype=np.int64)
         if offs[-1] != total_us:
             offs = np.append(offs, np.int64(total_us))
 
-        t    = t_start + offs.astype('timedelta64[us]')
-        r, v = propagate_analytical(t, **self.keplerian_params,
-                                    propagator_type=self.propagator_type)
-        return {'t': t, 'r': r, 'v': v}
+        t = t_start + offs.astype("timedelta64[us]")
+        r, v = cached_propagate_analytical(
+            t, **self.keplerian_params, propagator_type=self.propagator_type
+        )
+        return {"t": t, "r": r, "v": v}
 
     # ------------------------------------------------------------------
     # Orbit-type factory classmethods
@@ -352,13 +368,13 @@ class Spacecraft:
 
     @classmethod
     def sunsync(
-            cls,
-            altitude_km:     float,
-            node_solar_time: str,
-            node_type:       str            = 'ascending',
-            epoch:           np.datetime64 | None = None,
-            ma_deg:          float          = 0.0,
-    ) -> 'Spacecraft':
+        cls,
+        altitude_km: float,
+        node_solar_time: str,
+        node_type: str = "ascending",
+        epoch: np.datetime64 | None = None,
+        ma_deg: float = 0.0,
+    ) -> "Spacecraft":
         """Create a circular sun-synchronous orbit spacecraft.
 
         Delegates to :func:`~missiontools.orbit.sun_synchronous_orbit` for
@@ -386,21 +402,21 @@ class Spacecraft:
             With ``propagator_type='j2'``.
         """
         params = sun_synchronous_orbit(
-            altitude            = altitude_km * 1000.0,
-            local_time_at_node  = node_solar_time,
-            node_type           = node_type,
-            epoch               = epoch,
+            altitude=altitude_km * 1000.0,
+            local_time_at_node=node_solar_time,
+            node_type=node_type,
+            epoch=epoch,
         )
-        params['ma'] = np.radians(ma_deg)
-        return cls.from_dict(params, propagator_type='j2')
+        params["ma"] = np.radians(ma_deg)
+        return cls.from_dict(params, propagator_type="j2")
 
     @classmethod
     def geostationary(
-            cls,
-            longitude_deg: float,
-            epoch:         np.datetime64 | None = None,
-            propagator:    str                  = 'twobody',
-    ) -> 'Spacecraft':
+        cls,
+        longitude_deg: float,
+        epoch: np.datetime64 | None = None,
+        propagator: str = "twobody",
+    ) -> "Spacecraft":
         """Create a geostationary orbit spacecraft.
 
         Delegates to :func:`~missiontools.orbit.geostationary_orbit`. The
@@ -429,15 +445,15 @@ class Spacecraft:
 
     @classmethod
     def heo(
-            cls,
-            period_s:             float,
-            e:                    float,
-            epoch:                np.datetime64,
-            apogee_solar_time:    str,
-            apogee_longitude_deg: float,
-            arg_p_deg:            float = 270.0,
-            propagator:           str   = 'twobody',
-    ) -> 'Spacecraft':
+        cls,
+        period_s: float,
+        e: float,
+        epoch: np.datetime64,
+        apogee_solar_time: str,
+        apogee_longitude_deg: float,
+        arg_p_deg: float = 270.0,
+        propagator: str = "twobody",
+    ) -> "Spacecraft":
         """Create a critically inclined highly elliptical orbit spacecraft.
 
         Delegates to :func:`~missiontools.orbit.highly_elliptical_orbit`. The
@@ -470,12 +486,12 @@ class Spacecraft:
         """
         return cls.from_dict(
             highly_elliptical_orbit(
-                period_s             = period_s,
-                e                    = e,
-                epoch                = epoch,
-                apogee_solar_time    = apogee_solar_time,
-                apogee_longitude_deg = apogee_longitude_deg,
-                arg_p_deg            = arg_p_deg,
+                period_s=period_s,
+                e=e,
+                epoch=epoch,
+                apogee_solar_time=apogee_solar_time,
+                apogee_longitude_deg=apogee_longitude_deg,
+                arg_p_deg=arg_p_deg,
             ),
             propagator_type=propagator,
         )

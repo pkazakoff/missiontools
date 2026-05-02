@@ -3,19 +3,20 @@ import numpy.typing as npt
 from typing import Callable
 
 from .constants import EARTH_MEAN_RADIUS
-from .frames import geodetic_to_ecef, eci_to_ecef
+from .frames import geodetic_to_ecef, eci_to_ecef, geodetic_up
 from .propagation import propagate_analytical
 from ..cache import cached_propagate_analytical
 
 
-def earth_access(vecs:   npt.NDArray[np.floating],
-                 lat:    float | np.floating,
-                 lon:    float | np.floating,
-                 alt:    float | np.floating = 0.0,
-                 el_min: float | np.floating = 0.0,
-                 frame:  str = 'eci',
-                 t:      npt.NDArray[np.datetime64] | None = None,
-                 ) -> npt.NDArray[np.bool_]:
+def earth_access(
+    vecs: npt.NDArray[np.floating],
+    lat: float | np.floating,
+    lon: float | np.floating,
+    alt: float | np.floating = 0.0,
+    el_min: float | np.floating = 0.0,
+    frame: str = "eci",
+    t: npt.NDArray[np.datetime64] | None = None,
+) -> npt.NDArray[np.bool_]:
     """Determine which positions are visible from a ground station.
 
     A position is considered visible when the elevation angle from the ground
@@ -57,11 +58,11 @@ def earth_access(vecs:   npt.NDArray[np.floating],
         If ``frame='eci'`` and ``t`` is ``None``, or if ``frame`` is not
         ``'eci'`` or ``'ecef'``.
     """
-    if frame == 'eci':
+    if frame == "eci":
         if t is None:
             raise ValueError("t must be provided when frame='eci'")
         vecs_ecef = eci_to_ecef(vecs, t)
-    elif frame == 'ecef':
+    elif frame == "ecef":
         vecs_ecef = np.atleast_2d(vecs)
     else:
         raise ValueError(f"frame must be 'eci' or 'ecef', got '{frame!r}'")
@@ -72,16 +73,14 @@ def earth_access(vecs:   npt.NDArray[np.floating],
     # Outward ellipsoid normal at (lat, lon) — the geodetic "up" direction.
     # Using the geodetic normal (not gs_ecef / |gs_ecef|) gives elevation
     # angles consistent with a spirit level at the ground station.
-    up = np.array([np.cos(lat) * np.cos(lon),
-                   np.cos(lat) * np.sin(lon),
-                   np.sin(lat)])  # unit vector
+    up = geodetic_up(lat, lon)
 
     # Line-of-sight from ground station to each position
-    los = vecs_ecef - gs_ecef                             # (N, 3)
+    los = vecs_ecef - gs_ecef  # (N, 3)
     los_unit = los / np.linalg.norm(los, axis=1, keepdims=True)
 
     # Elevation = arcsin of the component of los_unit along "up"
-    sin_el = los_unit @ up                                # (N,)
+    sin_el = los_unit @ up  # (N,)
     el = np.arcsin(np.clip(sin_el, -1.0, 1.0))
 
     return el >= el_min
@@ -91,13 +90,14 @@ def earth_access(vecs:   npt.NDArray[np.floating],
 # Internal shared interval-finding helper
 # ---------------------------------------------------------------------------
 
+
 def _find_intervals(
-        access_fn: Callable[[npt.NDArray[np.int64]], npt.NDArray[np.bool_]],
-        t_start: np.datetime64,
-        t_end: np.datetime64,
-        max_step: np.timedelta64,
-        refine_tol: np.timedelta64,
-        batch_size: int,
+    access_fn: Callable[[npt.NDArray[np.int64]], npt.NDArray[np.bool_]],
+    t_start: np.datetime64,
+    t_end: np.datetime64,
+    max_step: np.timedelta64,
+    refine_tol: np.timedelta64,
+    batch_size: int,
 ) -> list[tuple[np.datetime64, np.datetime64]]:
     """Find contiguous access intervals given a boolean access function.
 
@@ -120,12 +120,12 @@ def _find_intervals(
     list[tuple[np.datetime64, np.datetime64]]
         ``(start, end)`` pairs for each continuous access window.
     """
-    t_start = np.asarray(t_start, dtype='datetime64[us]')
-    t_end   = np.asarray(t_end,   dtype='datetime64[us]')
+    t_start = np.asarray(t_start, dtype="datetime64[us]")
+    t_end = np.asarray(t_end, dtype="datetime64[us]")
 
-    total_us = int((t_end - t_start) / np.timedelta64(1, 'us'))
-    step_us  = int(max_step   / np.timedelta64(1, 'us'))
-    tol_us   = int(refine_tol / np.timedelta64(1, 'us'))
+    total_us = int((t_end - t_start) / np.timedelta64(1, "us"))
+    step_us = int(max_step / np.timedelta64(1, "us"))
+    tol_us = int(refine_tol / np.timedelta64(1, "us"))
 
     if total_us <= 0 or step_us <= 0:
         return []
@@ -137,31 +137,32 @@ def _find_intervals(
     n_total = len(offsets)
 
     def t_at(off: int) -> np.datetime64:
-        return t_start + np.timedelta64(int(off), 'us')
+        return t_start + np.timedelta64(int(off), "us")
 
     def _refine_vectorized(
-            transitions: list[tuple[int, int, bool]],
+        transitions: list[tuple[int, int, bool]],
     ) -> list[int]:
         """Batch binary search: refine all transitions simultaneously."""
         if not transitions:
             return []
         tol = max(tol_us, 1)
-        los    = np.array([t[0] for t in transitions], dtype=np.int64)
-        his    = np.array([t[1] for t in transitions], dtype=np.int64)
+        los = np.array([t[0] for t in transitions], dtype=np.int64)
+        his = np.array([t[1] for t in transitions], dtype=np.int64)
         rising = np.array([t[2] for t in transitions], dtype=np.bool_)
 
         while np.any(his - los > tol):
-            active      = his - los > tol
-            mids        = los + (his - los) // 2
-            active_idx  = np.where(active)[0]
+            active = his - los > tol
+            mids = los + (his - los) // 2
+            active_idx = np.where(active)[0]
             active_mids = mids[active_idx]
-            flags       = access_fn(active_mids)
+            flags = access_fn(active_mids)
             match = rising[active_idx] == flags
-            his[active_idx[match]]  = active_mids[match]
+            his[active_idx[match]] = active_mids[match]
             los[active_idx[~match]] = active_mids[~match]
 
-        return [int(his[j]) if rising[j] else int(los[j])
-                for j in range(len(transitions))]
+        return [
+            int(his[j]) if rising[j] else int(los[j]) for j in range(len(transitions))
+        ]
 
     # --- batched coarse scan ---
     intervals: list[tuple[np.datetime64, np.datetime64]] = []
@@ -171,17 +172,17 @@ def _find_intervals(
     pending_transitions: list[tuple[int, int, bool]] = []
 
     for batch_start in range(0, n_total, batch_size):
-        batch_end  = min(batch_start + batch_size, n_total)
+        batch_end = min(batch_start + batch_size, n_total)
         batch_offs = offsets[batch_start:batch_end]
-        flags      = access_fn(batch_offs)
+        flags = access_fn(batch_offs)
 
         if prev_flag is None:
-            prev_flag   = bool(flags[0])
+            prev_flag = bool(flags[0])
             prev_offset = int(batch_offs[0])
             if prev_flag:
                 interval_start_us = prev_offset
             batch_offs = batch_offs[1:]
-            flags      = flags[1:]
+            flags = flags[1:]
 
         if len(batch_offs) == 0:
             continue
@@ -190,12 +191,12 @@ def _find_intervals(
         change_k = np.where(prev_and_flags[:-1] != prev_and_flags[1:])[0]
 
         for k in change_k:
-            lo     = prev_offset if k == 0 else int(batch_offs[k - 1])
-            hi     = int(batch_offs[k])
+            lo = prev_offset if k == 0 else int(batch_offs[k - 1])
+            hi = int(batch_offs[k])
             rising = not bool(prev_and_flags[k])
             pending_transitions.append((lo, hi, rising))
 
-        prev_flag   = bool(flags[-1])
+        prev_flag = bool(flags[-1])
         prev_offset = int(batch_offs[-1])
 
     # --- vectorized refinement of all transitions at once ---
@@ -220,18 +221,19 @@ def _find_intervals(
 # Ground access
 # ---------------------------------------------------------------------------
 
+
 def earth_access_intervals(
-        t_start:          np.datetime64,
-        t_end:            np.datetime64,
-        keplerian_params: dict,
-        lat:              float | np.floating,
-        lon:              float | np.floating,
-        alt:              float | np.floating = 0.0,
-        el_min:           float | np.floating = 0.0,
-        propagator_type:  str = 'twobody',
-        max_step:         np.timedelta64 = np.timedelta64(30, 's'),
-        refine_tol:       np.timedelta64 = np.timedelta64(1, 's'),
-        batch_size:       int = 10_000,
+    t_start: np.datetime64,
+    t_end: np.datetime64,
+    keplerian_params: dict,
+    lat: float | np.floating,
+    lon: float | np.floating,
+    alt: float | np.floating = 0.0,
+    el_min: float | np.floating = 0.0,
+    propagator_type: str = "twobody",
+    max_step: np.timedelta64 = np.timedelta64(30, "s"),
+    refine_tol: np.timedelta64 = np.timedelta64(1, "s"),
+    batch_size: int = 10_000,
 ) -> list[tuple[np.datetime64, np.datetime64]]:
     """Find time intervals when a satellite is visible from a ground station.
 
@@ -277,26 +279,30 @@ def earth_access_intervals(
         List of ``(start, end)`` pairs in ``datetime64[us]``, one per
         continuous access window. Empty list if no access occurs.
     """
-    t_start = np.asarray(t_start, dtype='datetime64[us]')
+    t_start = np.asarray(t_start, dtype="datetime64[us]")
 
     def _access_batch(off_arr: npt.NDArray[np.int64]) -> npt.NDArray[np.bool_]:
-        t_arr = t_start + off_arr.astype('timedelta64[us]')
-        r, _ = cached_propagate_analytical(t_arr, **keplerian_params,
-                                           propagator_type=propagator_type)
-        return earth_access(r, lat, lon, alt, el_min, frame='eci', t=t_arr)
+        t_arr = t_start + off_arr.astype("timedelta64[us]")
+        r, _ = cached_propagate_analytical(
+            t_arr, **keplerian_params, propagator_type=propagator_type
+        )
+        return earth_access(r, lat, lon, alt, el_min, frame="eci", t=t_arr)
 
-    return _find_intervals(_access_batch, t_start, t_end,
-                           max_step, refine_tol, batch_size)
+    return _find_intervals(
+        _access_batch, t_start, t_end, max_step, refine_tol, batch_size
+    )
 
 
 # ---------------------------------------------------------------------------
 # Space-to-space access
 # ---------------------------------------------------------------------------
 
-def _los_clear(r1_2d: npt.NDArray[np.floating],
-               r2_2d: npt.NDArray[np.floating],
-               body_radius: float,
-               ) -> npt.NDArray[np.bool_]:
+
+def _los_clear(
+    r1_2d: npt.NDArray[np.floating],
+    r2_2d: npt.NDArray[np.floating],
+    body_radius: float,
+) -> npt.NDArray[np.bool_]:
     """True where the line segment r1→r2 clears the spherical central body.
 
     Parameters
@@ -310,22 +316,22 @@ def _los_clear(r1_2d: npt.NDArray[np.floating],
     -------
     npt.NDArray[np.bool_], shape ``(N,)``
     """
-    d    = r2_2d - r1_2d                              # (N, 3)
-    d2   = np.einsum('ni,ni->n', d, d)                # |d|², (N,)
+    d = r2_2d - r1_2d  # (N, 3)
+    d2 = np.einsum("ni,ni->n", d, d)  # |d|², (N,)
 
     # Guard against coincident points (d2 == 0): treat t* = 0, closest = r1.
-    safe   = np.where(d2 > 0, d2, 1.0)
-    t_star = np.clip(-np.einsum('ni,ni->n', r1_2d, d) / safe, 0.0, 1.0)
+    safe = np.where(d2 > 0, d2, 1.0)
+    t_star = np.clip(-np.einsum("ni,ni->n", r1_2d, d) / safe, 0.0, 1.0)
 
-    closest = r1_2d + t_star[:, np.newaxis] * d       # (N, 3)
-    dist2   = np.einsum('ni,ni->n', closest, closest)  # (N,)
-    return dist2 >= body_radius ** 2
+    closest = r1_2d + t_star[:, np.newaxis] * d  # (N, 3)
+    dist2 = np.einsum("ni,ni->n", closest, closest)  # (N,)
+    return dist2 >= body_radius**2
 
 
 def space_to_space_access(
-        r1:          npt.NDArray[np.floating],
-        r2:          npt.NDArray[np.floating],
-        body_radius: float = EARTH_MEAN_RADIUS,
+    r1: npt.NDArray[np.floating],
+    r2: npt.NDArray[np.floating],
+    body_radius: float = EARTH_MEAN_RADIUS,
 ) -> npt.NDArray[np.bool_]:
     """Determine which positions have an unobstructed line-of-sight.
 
@@ -376,16 +382,16 @@ def space_to_space_access(
 
 
 def space_to_space_access_intervals(
-        t_start:             np.datetime64,
-        t_end:               np.datetime64,
-        keplerian_params_1:  dict,
-        keplerian_params_2:  dict,
-        body_radius:         float = EARTH_MEAN_RADIUS,
-        propagator_type_1:   str = 'twobody',
-        propagator_type_2:   str = 'twobody',
-        max_step:            np.timedelta64 = np.timedelta64(30, 's'),
-        refine_tol:          np.timedelta64 = np.timedelta64(1, 's'),
-        batch_size:          int = 10_000,
+    t_start: np.datetime64,
+    t_end: np.datetime64,
+    keplerian_params_1: dict,
+    keplerian_params_2: dict,
+    body_radius: float = EARTH_MEAN_RADIUS,
+    propagator_type_1: str = "twobody",
+    propagator_type_2: str = "twobody",
+    max_step: np.timedelta64 = np.timedelta64(30, "s"),
+    refine_tol: np.timedelta64 = np.timedelta64(1, "s"),
+    batch_size: int = 10_000,
 ) -> list[tuple[np.datetime64, np.datetime64]]:
     """Find time intervals when two spacecraft have unobstructed line-of-sight.
 
@@ -428,15 +434,18 @@ def space_to_space_access_intervals(
         List of ``(start, end)`` pairs in ``datetime64[us]``, one per
         continuous access window. Empty list if no access occurs.
     """
-    t_start = np.asarray(t_start, dtype='datetime64[us]')
+    t_start = np.asarray(t_start, dtype="datetime64[us]")
 
     def _access_batch(off_arr: npt.NDArray[np.int64]) -> npt.NDArray[np.bool_]:
-        t_arr = t_start + off_arr.astype('timedelta64[us]')
-        r1, _ = cached_propagate_analytical(t_arr, **keplerian_params_1,
-                                            propagator_type=propagator_type_1)
-        r2, _ = cached_propagate_analytical(t_arr, **keplerian_params_2,
-                                            propagator_type=propagator_type_2)
+        t_arr = t_start + off_arr.astype("timedelta64[us]")
+        r1, _ = cached_propagate_analytical(
+            t_arr, **keplerian_params_1, propagator_type=propagator_type_1
+        )
+        r2, _ = cached_propagate_analytical(
+            t_arr, **keplerian_params_2, propagator_type=propagator_type_2
+        )
         return space_to_space_access(r1, r2, body_radius)
 
-    return _find_intervals(_access_batch, t_start, t_end,
-                           max_step, refine_tol, batch_size)
+    return _find_intervals(
+        _access_batch, t_start, t_end, max_step, refine_tol, batch_size
+    )

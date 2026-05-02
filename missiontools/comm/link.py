@@ -6,11 +6,12 @@ import numpy as np
 import numpy.typing as npt
 
 from .antenna import AbstractAntenna
+from ..orbit.utils import host_eci_state
 from ..orbit.propagation import propagate_analytical
-from ..orbit.frames import geodetic_to_ecef, ecef_to_eci, eci_to_ecef
+from ..orbit.frames import geodetic_to_ecef, ecef_to_eci, eci_to_ecef, geodetic_up
 from ..orbit.constants import EARTH_SEMI_MAJOR_AXIS
 
-_C = 299_792_458.0          # speed of light (m/s)
+_C = 299_792_458.0  # speed of light (m/s)
 _K_DB = 10.0 * np.log10(1.380649e-23)  # Boltzmann constant in dBW/K/Hz ≈ -228.6
 
 
@@ -64,13 +65,9 @@ class Link:
         from ..ground_station import GroundStation
 
         if not isinstance(tx, AbstractAntenna):
-            raise TypeError(
-                f"tx must be an AbstractAntenna, got {type(tx).__name__!r}"
-            )
+            raise TypeError(f"tx must be an AbstractAntenna, got {type(tx).__name__!r}")
         if not isinstance(rx, AbstractAntenna):
-            raise TypeError(
-                f"rx must be an AbstractAntenna, got {type(rx).__name__!r}"
-            )
+            raise TypeError(f"rx must be an AbstractAntenna, got {type(rx).__name__!r}")
         if tx.host is None:
             raise ValueError("tx antenna must be attached to a host before use.")
         if rx.host is None:
@@ -105,7 +102,8 @@ class Link:
         # Central body radius for obstruction check
         sc_host = (tx_host if tx_is_sc else None) or (rx_host if rx_is_sc else None)
         self._body_radius = (
-            sc_host.central_body_radius if sc_host is not None
+            sc_host.central_body_radius
+            if sc_host is not None
             else EARTH_SEMI_MAJOR_AXIS
         )
 
@@ -187,7 +185,7 @@ class Link:
             body blocks the line of sight are returned as NaN.
         """
         scalar_input = np.asarray(t).ndim == 0
-        t_arr = np.atleast_1d(np.asarray(t, dtype='datetime64[us]'))
+        t_arr = np.atleast_1d(np.asarray(t, dtype="datetime64[us]"))
 
         r_tx, v_tx = self._host_eci(self._tx.host, t_arr)
         r_rx, v_rx = self._host_eci(self._rx.host, t_arr)
@@ -198,15 +196,13 @@ class Link:
         # Range and FSPL
         delta = r_rx - r_tx  # (N,3)
         range_m = np.linalg.norm(delta, axis=1)  # (N,)
-        fspl_db = 20.0 * np.log10(
-            4.0 * np.pi * range_m * self._frequency_hz / _C
-        )
+        fspl_db = 20.0 * np.log10(4.0 * np.pi * range_m * self._frequency_hz / _C)
 
         # Tx gain
-        g_tx = self._tx.gain(t_arr, delta, frame='eci', r_eci=r_tx, v_eci=v_tx)
+        g_tx = self._tx.gain(t_arr, delta, frame="eci", r_eci=r_tx, v_eci=v_tx)
 
         # Rx gain and pointing loss
-        g_rx = self._rx.gain(t_arr, -delta, frame='eci', r_eci=r_rx, v_eci=v_rx)
+        g_rx = self._rx.gain(t_arr, -delta, frame="eci", r_eci=r_rx, v_eci=v_rx)
         pointing_loss = g_rx - self._rx.peak_gain_dbi  # ≤ 0
 
         # C/N0 (dBHz)
@@ -246,26 +242,7 @@ class Link:
         host,
         t_arr: npt.NDArray,
     ) -> tuple[npt.NDArray, npt.NDArray]:
-        """Return (r_eci, v_eci) shape (N,3) for a Spacecraft or GroundStation."""
-        from ..spacecraft import Spacecraft
-        from ..ground_station import GroundStation
-
-        if isinstance(host, Spacecraft):
-            r, v = propagate_analytical(
-                t_arr, **host.keplerian_params, propagator_type=host.propagator_type
-            )
-            return r, v
-        elif isinstance(host, GroundStation):
-            r_ecef = geodetic_to_ecef(
-                np.radians(host.lat), np.radians(host.lon), host.alt
-            )
-            n = len(t_arr)
-            r_ecef_tiled = np.tile(r_ecef, (n, 1))
-            r_eci = ecef_to_eci(r_ecef_tiled, t_arr)
-            v_eci = np.zeros((n, 3))
-            return r_eci, v_eci
-        else:
-            raise TypeError(f"Unsupported host type: {type(host).__name__!r}")
+        return host_eci_state(host, t_arr)
 
     def _los_blocked(
         self,
@@ -281,18 +258,18 @@ class Link:
         incorrectly flag all links as blocked.
         """
         d = r_rx - r_tx  # (N,3)
-        r_tx_dot_d = np.einsum('ij,ij->i', r_tx, d)
-        d_dot_d = np.einsum('ij,ij->i', d, d)
+        r_tx_dot_d = np.einsum("ij,ij->i", r_tx, d)
+        d_dot_d = np.einsum("ij,ij->i", d, d)
         t_star = np.clip(-r_tx_dot_d / d_dot_d, 0.0, 1.0)
         closest = r_tx + t_star[:, np.newaxis] * d
-        min_dist_sq = np.einsum('ij,ij->i', closest, closest)
+        min_dist_sq = np.einsum("ij,ij->i", closest, closest)
 
         # Effective blocking radius: no larger than the smaller of the two
         # endpoint distances (so neither endpoint is ever "inside" the sphere).
-        r_tx_sq = np.einsum('ij,ij->i', r_tx, r_tx)
-        r_rx_sq = np.einsum('ij,ij->i', r_rx, r_rx)
+        r_tx_sq = np.einsum("ij,ij->i", r_tx, r_tx)
+        r_rx_sq = np.einsum("ij,ij->i", r_rx, r_rx)
         block_sq = np.minimum(
-            self._body_radius ** 2,
+            self._body_radius**2,
             np.minimum(r_tx_sq, r_rx_sq) * (1.0 - 1e-6),
         )
         return min_dist_sq < block_sq
@@ -332,26 +309,21 @@ class Link:
 
         # Elevation angle from GS to SC
         r_sc_ecef = eci_to_ecef(r_sc_eci, t_arr)
-        r_gs_ecef = geodetic_to_ecef(
-            np.radians(gs.lat), np.radians(gs.lon), gs.alt
-        )
+        r_gs_ecef = geodetic_to_ecef(np.radians(gs.lat), np.radians(gs.lon), gs.alt)
         delta_ecef = r_sc_ecef - r_gs_ecef  # (N,3)
 
         lat_rad = np.radians(gs.lat)
         lon_rad = np.radians(gs.lon)
-        up = np.array([
-            np.cos(lat_rad) * np.cos(lon_rad),
-            np.cos(lat_rad) * np.sin(lon_rad),
-            np.sin(lat_rad),
-        ])
+        up = geodetic_up(lat_rad, lon_rad)
         range_m = np.linalg.norm(delta_ecef, axis=1)
         up_component = delta_ecef @ up
-        elevation_deg = np.degrees(np.arcsin(
-            np.clip(up_component / range_m, -1.0, 1.0)
-        ))
+        elevation_deg = np.degrees(
+            np.arcsin(np.clip(up_component / range_m, -1.0, 1.0))
+        )
         elevation_deg = np.maximum(elevation_deg, 0.1)  # itur undefined at 0°
 
         import itur
+
         freq_ghz = self._frequency_hz / 1e9
         p = 100.0 - availability_pct  # % of time exceeded
 
@@ -360,7 +332,7 @@ class Link:
             result = itur.atmospheric_attenuation_slant_path(
                 gs.lat, gs.lon, freq_ghz, elevation_deg[k], p, D=0
             )
-            val = result.value if hasattr(result, 'value') else float(result)
+            val = result.value if hasattr(result, "value") else float(result)
             atm_loss[k] = float(np.asarray(val))
 
         return atm_loss

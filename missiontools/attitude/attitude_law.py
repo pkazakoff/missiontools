@@ -23,6 +23,7 @@ import numpy.typing as npt
 from ..orbit.constants import EARTH_SEMI_MAJOR_AXIS, EARTH_INVERSE_FLATTENING
 from ..orbit.frames import (
     _lvlh_basis,
+    eci_ecef_rotation,
     eci_to_ecef,
     eci_to_lvlh,
     ecef_to_eci,
@@ -30,6 +31,7 @@ from ..orbit.frames import (
     sun_vec_eci,
 )
 from ..orbit.propagation import propagate_analytical
+from ..orbit.utils import host_eci_state
 
 _VALID_FRAMES = frozenset({"lvlh", "eci", "ecef"})
 
@@ -303,15 +305,16 @@ def _limb_direction(
         If any sample has the spacecraft on or inside the offset ellipsoid,
         or if the tangent equation has no real solution.
     """
-    # LVLH basis in ECI: rows are R̂, Ŝ, Ŵ
     L = _lvlh_basis(r_eci, v_eci)  # (N, 3, 3)
 
-    # Transform SC position and LVLH basis rows into ECEF (where the
-    # offset ellipsoid is axis-aligned).
-    r_ecef = eci_to_ecef(r_eci, t_arr)  # (N, 3)
-    R_hat_ecef = eci_to_ecef(L[:, 0, :], t_arr)
-    S_hat_ecef = eci_to_ecef(L[:, 1, :], t_arr)
-    W_hat_ecef = eci_to_ecef(L[:, 2, :], t_arr)
+    Rz = eci_ecef_rotation(t_arr)  # (N, 3, 3)
+
+    vecs_eci = np.stack([r_eci, L[:, 0, :], L[:, 1, :], L[:, 2, :]])  # (4, N, 3)
+    vecs_ecef = np.einsum("nij,knj->kni", Rz, vecs_eci)  # (4, N, 3)
+    r_ecef = vecs_ecef[0]
+    R_hat_ecef = vecs_ecef[1]
+    S_hat_ecef = vecs_ecef[2]
+    W_hat_ecef = vecs_ecef[3]
 
     # Horizontal-yaw direction and nadir direction in ECEF
     cy, sy = np.cos(yaw), np.sin(yaw)
@@ -357,7 +360,7 @@ def _limb_direction(
     d_ecef = s[:, None] * p + c[:, None] * q  # (N, 3)
     d_ecef = d_ecef / np.linalg.norm(d_ecef, axis=1, keepdims=True)
 
-    return ecef_to_eci(d_ecef, t_arr)
+    return np.einsum("nji,nj->ni", Rz, d_ecef)
 
 
 def _q_boresight(q: npt.NDArray) -> npt.NDArray:
@@ -876,17 +879,8 @@ class TrackAttitudeLaw(AbstractAttitudeLaw):
             )
 
     def _target_eci(self, t_arr):
-        if self._is_sc:
-            r_tgt, _ = propagate_analytical(
-                t_arr,
-                **self._target.keplerian_params,
-                propagator_type=self._target.propagator_type,
-            )
-            return r_tgt
-        return ecef_to_eci(
-            np.broadcast_to(self._gs_ecef, (len(t_arr), 3)),
-            t_arr,
-        )
+        r, _ = host_eci_state(self._target, t_arr)
+        return r
 
     def __repr__(self) -> str:
         return f"TrackAttitudeLaw(target={self._target!r})"
@@ -1211,7 +1205,7 @@ class ConditionAttitudeLaw(AbstractAttitudeLaw):
         gs       = GroundStation(lat=51.5, lon=-0.1)
         link_law = TrackAttitudeLaw(...)
         nadir    = FixedAttitudeLaw.nadir()
-        cond     = SpaceGroundAccessCondition(sc, gs, el_min=5.0)
+        cond     = SpaceGroundAccessCondition(sc, gs, el_min_deg=5.0)
 
         law = ConditionAttitudeLaw(
             default_attitude    = nadir,

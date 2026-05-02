@@ -51,6 +51,8 @@ class AbstractAntenna(ABC):
     rotation_deg : float, optional
     """
 
+    _requires_mounting = True
+
     def __init__(
         self,
         *,
@@ -61,8 +63,9 @@ class AbstractAntenna(ABC):
         elevation_deg: float | None = None,
         rotation_deg: float = 0.0,
     ) -> None:
-        sc_opts = sum(x is not None for x in
-                      (attitude_law, body_vector, body_euler_deg))
+        sc_opts = sum(
+            x is not None for x in (attitude_law, body_vector, body_euler_deg)
+        )
         gs_opts = azimuth_deg is not None
 
         if sc_opts and gs_opts:
@@ -73,16 +76,20 @@ class AbstractAntenna(ABC):
             )
 
         if not sc_opts and not gs_opts:
-            raise ValueError(
-                "Must specify spacecraft mounting (attitude_law, "
-                "body_vector, or body_euler_deg) or ground station "
-                "mounting (azimuth_deg + elevation_deg)."
-            )
+            if self._requires_mounting:
+                raise ValueError(
+                    "Must specify spacecraft mounting (attitude_law, "
+                    "body_vector, or body_euler_deg) or ground station "
+                    "mounting (azimuth_deg + elevation_deg)."
+                )
+            self._mode = None
+            self._spacecraft = None
+            self._ground_station = None
+            return
 
         if sc_opts > 1:
             raise ValueError(
-                "Specify exactly one of attitude_law, body_vector, "
-                "or body_euler_deg."
+                "Specify exactly one of attitude_law, body_vector, or body_euler_deg."
             )
 
         self._spacecraft = None
@@ -98,18 +105,18 @@ class AbstractAntenna(ABC):
                 raise ValueError(
                     f"elevation_deg must be in [-90, 90], got {elevation_deg}"
                 )
-            self._mode = 'ground'
+            self._mode = "ground"
             az_rad = np.radians(float(azimuth_deg))
             el_rad = np.radians(float(elevation_deg))
             self._boresight_enu = azel_to_enu(az_rad, el_rad)
             self._rotation_deg = float(rotation_deg)
             self._boresight_ecef = None  # set at attachment time
         elif attitude_law is not None:
-            self._mode = 'independent'
+            self._mode = "independent"
             self._attitude_law = attitude_law
         else:
             # Body-mounted
-            self._mode = 'body'
+            self._mode = "body"
             if body_vector is not None:
                 bv = np.asarray(body_vector, dtype=np.float64)
                 if bv.shape != (3,):
@@ -165,25 +172,28 @@ class AbstractAntenna(ABC):
         ndarray, shape (N, 3) or (3,)
             Boresight unit vector in ECI.
         """
-        if self._mode == 'independent':
+        if self._mode == "independent":
             return self._attitude_law.pointing_eci(r_eci, v_eci, t)
-        elif self._mode == 'body':
+        elif self._mode == "body":
             if self._spacecraft is None:
                 raise RuntimeError(
                     "Body-mounted antenna must be attached to a Spacecraft "
                     "via add_antenna() before computing boresight."
                 )
             return self._spacecraft.attitude_law.rotate_from_body(
-                self._body_vector, r_eci, v_eci, t,
+                self._body_vector,
+                r_eci,
+                v_eci,
+                t,
             )
-        elif self._mode == 'ground':
+        elif self._mode == "ground":
             if self._boresight_ecef is None:
                 raise RuntimeError(
                     "Ground-mounted antenna must be attached to a "
                     "GroundStation via add_antenna() before computing "
                     "boresight."
                 )
-            t_arr = np.atleast_1d(np.asarray(t, dtype='datetime64[us]'))
+            t_arr = np.atleast_1d(np.asarray(t, dtype="datetime64[us]"))
             n = len(t_arr)
             boresight_tiled = np.tile(self._boresight_ecef, (n, 1))
             result = ecef_to_eci(boresight_tiled, t_arr)
@@ -191,9 +201,7 @@ class AbstractAntenna(ABC):
                 return result[0]
             return result
         else:
-            raise RuntimeError(
-                f"Cannot compute boresight for mode '{self._mode}'."
-            )
+            raise RuntimeError(f"Cannot compute boresight for mode '{self._mode}'.")
 
     # --- gain computation ---
 
@@ -201,7 +209,7 @@ class AbstractAntenna(ABC):
         self,
         t: npt.ArrayLike,
         v: npt.ArrayLike,
-        frame: str = 'eci',
+        frame: str = "eci",
         *,
         r_eci: npt.ArrayLike | None = None,
         v_eci: npt.ArrayLike | None = None,
@@ -230,25 +238,21 @@ class AbstractAntenna(ABC):
         ndarray, shape (N,)
             Gain in dBi for each direction vector.
         """
-        t_arr = np.atleast_1d(np.asarray(t, dtype='datetime64[us]'))
+        t_arr = np.atleast_1d(np.asarray(t, dtype="datetime64[us]"))
         v_arr = np.atleast_2d(np.asarray(v, dtype=np.float64))
         n = len(v_arr)
 
         # Convert v to ECI
-        if frame == 'eci':
+        if frame == "eci":
             v_eci_dir = v_arr
-        elif frame == 'ecef':
+        elif frame == "ecef":
             v_eci_dir = ecef_to_eci(v_arr, t_arr)
-        elif frame == 'lvlh':
+        elif frame == "lvlh":
             if r_eci is None or v_eci is None:
-                raise ValueError(
-                    "r_eci and v_eci are required for frame='lvlh'."
-                )
+                raise ValueError("r_eci and v_eci are required for frame='lvlh'.")
             v_eci_dir = lvlh_to_eci(v_arr, r_eci, v_eci)
         else:
-            raise ValueError(
-                f"Unknown frame '{frame}'. Use 'eci', 'ecef', or 'lvlh'."
-            )
+            raise ValueError(f"Unknown frame '{frame}'. Use 'eci', 'ecef', or 'lvlh'.")
 
         # Normalise direction vectors
         norms = np.linalg.norm(v_eci_dir, axis=1, keepdims=True)
@@ -256,12 +260,10 @@ class AbstractAntenna(ABC):
         v_hat = v_eci_dir / norms
 
         # Get boresight in ECI
-        boresight = np.atleast_2d(
-            self.boresight_eci(r_eci, v_eci, t_arr)
-        )
+        boresight = np.atleast_2d(self.boresight_eci(r_eci, v_eci, t_arr))
 
         # Off-boresight angle
-        cos_theta = np.einsum('ij,ij->i', boresight, v_hat)
+        cos_theta = np.einsum("ij,ij->i", boresight, v_hat)
         theta = np.arccos(np.clip(cos_theta, -1.0, 1.0))
 
         return self._pattern_gain(theta)
@@ -302,18 +304,17 @@ class IsotropicAntenna(AbstractAntenna):
         Constant gain (dBi).  Default 0.0.
     """
 
+    _requires_mounting = False
+
     def __init__(self, gain_dbi: float = 0.0) -> None:
-        # Skip AbstractAntenna.__init__ — no mounting needed
+        super().__init__()
         self._gain_dbi = float(gain_dbi)
-        self._mode = None
-        self._spacecraft = None
-        self._ground_station = None
 
     def gain(
         self,
         t: npt.ArrayLike,
         v: npt.ArrayLike,
-        frame: str = 'eci',
+        frame: str = "eci",
         *,
         r_eci: npt.ArrayLike | None = None,
         v_eci: npt.ArrayLike | None = None,
@@ -375,13 +376,9 @@ class SymmetricAntenna(AbstractAntenna):
         gains = np.asarray(gains_dbi, dtype=np.float64)
 
         if angles.ndim != 1:
-            raise ValueError(
-                f"angles_deg must be 1-D, got shape {angles.shape}"
-            )
+            raise ValueError(f"angles_deg must be 1-D, got shape {angles.shape}")
         if gains.ndim != 1:
-            raise ValueError(
-                f"gains_dbi must be 1-D, got shape {gains.shape}"
-            )
+            raise ValueError(f"gains_dbi must be 1-D, got shape {gains.shape}")
         if len(angles) != len(gains):
             raise ValueError(
                 f"angles_deg length ({len(angles)}) must match "
@@ -392,9 +389,7 @@ class SymmetricAntenna(AbstractAntenna):
         if np.any(np.diff(angles) <= 0):
             raise ValueError("angles_deg must be monotonically increasing.")
         if angles[0] < 0 or angles[-1] > 180:
-            raise ValueError(
-                "angles_deg must be within [0, 180] degrees."
-            )
+            raise ValueError("angles_deg must be within [0, 180] degrees.")
 
         self._angles_rad = np.radians(angles)
         self._gains_dbi = gains.copy()
@@ -419,7 +414,7 @@ class SymmetricAntenna(AbstractAntenna):
         edge_gain: float | None = None,
         central_body_radius: float = EARTH_MEAN_RADIUS,
         **kwargs,
-    ) -> 'SymmetricAntenna':
+    ) -> "SymmetricAntenna":
         """Isoflux antenna pattern for a fixed nadir-pointing orbit altitude.
 
         Shapes the beam so that power flux density at the spherical body
@@ -455,7 +450,9 @@ class SymmetricAntenna(AbstractAntenna):
         # Slant range at each off-nadir angle
         n_main = 200
         thetas = np.linspace(0.0, theta_max, n_main)
-        ranges = d * np.cos(thetas) - np.sqrt(np.maximum(0.0, R**2 - d**2 * np.sin(thetas)**2))
+        ranges = d * np.cos(thetas) - np.sqrt(
+            np.maximum(0.0, R**2 - d**2 * np.sin(thetas) ** 2)
+        )
 
         # Relative gain shape (dB), normalised to boresight = 0
         gain_shape_db = 20.0 * np.log10(ranges / h)
@@ -466,7 +463,7 @@ class SymmetricAntenna(AbstractAntenna):
         else:
             # Unity directivity: D₀ = 2 / ∫₀^θ_max [(r/h)² · sin(θ)] dθ
             integrand = (ranges / h) ** 2 * np.sin(thetas)
-            integral = np.trapezoid(integrand, thetas)
+            integral = np.trapz(integrand, thetas)
             g0 = 10.0 * np.log10(2.0 / integral)
 
         gains_main = g0 + gain_shape_db
@@ -491,7 +488,7 @@ class SymmetricAntenna(AbstractAntenna):
         cls,
         gain_dbi: float,
         **kwargs,
-    ) -> 'SymmetricAntenna':
+    ) -> "SymmetricAntenna":
         """Ideal Gaussian beam pattern with automatically scaled beamwidth.
 
         The half-power beamwidth is derived from the normalisation condition
@@ -520,18 +517,20 @@ class SymmetricAntenna(AbstractAntenna):
         def _residual(sigma: float) -> float:
             # D = 2 / ∫₀^π exp(−θ²/(2σ²)) · sin(θ) dθ
             th = np.linspace(0.0, np.pi, 4000)
-            integ = np.trapezoid(np.exp(-th**2 / (2.0 * sigma**2)) * np.sin(th), th)
+            integ = np.trapz(np.exp(-(th**2) / (2.0 * sigma**2)) * np.sin(th), th)
             return 2.0 / integ - D
 
         sigma = brentq(_residual, 1e-4, 50.0)
 
         # Angle at which gain drops to −60 dBi
-        theta_cutoff = sigma * np.sqrt(2.0 * (float(gain_dbi) + 60.0) * np.log(10.0) / 10.0)
+        theta_cutoff = sigma * np.sqrt(
+            2.0 * (float(gain_dbi) + 60.0) * np.log(10.0) / 10.0
+        )
         theta_cutoff = min(theta_cutoff, np.pi / 2.0)
 
         thetas = np.linspace(0.0, theta_cutoff, 500)
         gains = float(gain_dbi) + 10.0 * np.log10(
-            np.maximum(np.exp(-thetas**2 / (2.0 * sigma**2)), 1e-20)
+            np.maximum(np.exp(-(thetas**2) / (2.0 * sigma**2)), 1e-20)
         )
         # Append a far-field point at 180° to cover the full back hemisphere
         angles_out = np.append(np.degrees(thetas), 180.0)
@@ -547,7 +546,7 @@ class SymmetricAntenna(AbstractAntenna):
         eff: float = 0.6,
         envelope: bool = False,
         **kwargs,
-    ) -> 'SymmetricAntenna':
+    ) -> "SymmetricAntenna":
         """Uniformly illuminated parabolic reflector antenna pattern.
 
         Parameters
@@ -591,7 +590,7 @@ class SymmetricAntenna(AbstractAntenna):
         # [2 J₁(u)/u]²  with limit 1 at u=0
         u_safe = np.where(u < 1e-12, 1e-12, u)
         j1u = np.where(u < 1e-12, 1.0, 2.0 * j1(u_safe) / u_safe)
-        f = j1u ** 2
+        f = j1u**2
 
         if envelope:
             # Beyond the first zero of J₁ (u ≈ 3.8317), replace with asymptotic envelope
@@ -622,7 +621,7 @@ class SymmetricAntenna(AbstractAntenna):
         main_lobe_model: bool = False,
         gmax_dbi: float | None = None,
         **kwargs,
-    ) -> 'SymmetricAntenna':
+    ) -> "SymmetricAntenna":
         """ITU-R S.465 reference Earth station antenna pattern.
 
         Parameters
@@ -673,9 +672,9 @@ class SymmetricAntenna(AbstractAntenna):
         if main_lobe_model:
             # APEREC013V01 smooth main-lobe extension
             g1 = 32.0 if dl > 100 else -18.0 + 25.0 * np.log10(dl)
-            phi_r = 1.0 if dl > 100 else 100.0 / dl        # degrees
+            phi_r = 1.0 if dl > 100 else 100.0 / dl  # degrees
             phi_m = (20.0 / dl) * np.sqrt(max(g_peak_dbi - g1, 0.0))
-            phi_b = 10.0 ** (42.0 / 25.0)                  # ≈ 48.0°
+            phi_b = 10.0 ** (42.0 / 25.0)  # ≈ 48.0°
 
             # Parabolic main lobe: 0 → φ_m
             phi_ml = np.linspace(0.0, phi_m, 200, endpoint=False)
@@ -730,5 +729,7 @@ class SymmetricAntenna(AbstractAntenna):
         off_boresight_rad: npt.NDArray[np.floating],
     ) -> npt.NDArray[np.floating]:
         return np.interp(
-            off_boresight_rad, self._angles_rad, self._gains_dbi,
+            off_boresight_rad,
+            self._angles_rad,
+            self._gains_dbi,
         )

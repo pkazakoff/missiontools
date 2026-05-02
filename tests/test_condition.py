@@ -238,10 +238,10 @@ class TestSpaceGroundAccessConditionConstruct:
 
     def test_rejects_nonfinite_el_min(self):
         with pytest.raises(ValueError, match="el_min"):
-            SpaceGroundAccessCondition(_SC, _GS, el_min=np.inf)
+            SpaceGroundAccessCondition(_SC, _GS, el_min_deg=np.inf)
 
     def test_repr_contains_el_min(self):
-        c = SpaceGroundAccessCondition(_SC, _GS, el_min=7.5)
+        c = SpaceGroundAccessCondition(_SC, _GS, el_min_deg=7.5)
         assert "7.5" in repr(c)
 
 
@@ -262,7 +262,7 @@ class TestSpaceGroundAccessConditionGeometry:
         lat = np.degrees(np.arcsin(r_ecef[2] / np.linalg.norm(r_ecef)))
         lon = np.degrees(np.arctan2(r_ecef[1], r_ecef[0]))
         gs = GroundStation(lat=lat, lon=lon)
-        cond = SpaceGroundAccessCondition(_SC, gs, el_min=5.0)
+        cond = SpaceGroundAccessCondition(_SC, gs, el_min_deg=5.0)
         assert cond.at(_EPOCH) is True
 
     def test_antipodal_point_does_not_see_spacecraft(self):
@@ -276,14 +276,14 @@ class TestSpaceGroundAccessConditionGeometry:
         lat = np.degrees(np.arcsin(r_ecef[2] / np.linalg.norm(r_ecef)))
         lon = np.degrees(np.arctan2(r_ecef[1], r_ecef[0]))
         gs = GroundStation(lat=-lat, lon=lon + 180.0)
-        cond = SpaceGroundAccessCondition(_SC, gs, el_min=0.0)
+        cond = SpaceGroundAccessCondition(_SC, gs, el_min_deg=0.0)
         assert cond.at(_EPOCH) is False
 
     def test_higher_el_min_only_removes_passes(self):
         """Raising el_min cannot turn False samples True."""
         t = np.arange(_EPOCH, _T_END, np.timedelta64(120, "s"), dtype="datetime64[us]")
-        c0 = SpaceGroundAccessCondition(_SC, _GS, el_min=0.0)
-        c10 = SpaceGroundAccessCondition(_SC, _GS, el_min=10.0)
+        c0 = SpaceGroundAccessCondition(_SC, _GS, el_min_deg=0.0)
+        c10 = SpaceGroundAccessCondition(_SC, _GS, el_min_deg=10.0)
         v0 = c0.at(t)
         v10 = c10.at(t)
         # Every True at el_min=10 must also be True at el_min=0.
@@ -293,10 +293,10 @@ class TestSpaceGroundAccessConditionGeometry:
     def test_agrees_with_gs_access_intervals(self):
         """Sample-wise truth must match interval-membership from GroundStation.access."""
         t = np.arange(_EPOCH, _T_END, np.timedelta64(60, "s"), dtype="datetime64[us]")
-        cond = SpaceGroundAccessCondition(_SC, _GS, el_min=5.0)
+        cond = SpaceGroundAccessCondition(_SC, _GS, el_min_deg=5.0)
         samples = cond.at(t)
         intervals = _GS.access(
-            _SC, _EPOCH, _T_END, el_min=5.0, max_step=np.timedelta64(30, "s")
+            _SC, _EPOCH, _T_END, el_min_deg=5.0, max_step=np.timedelta64(30, "s")
         )
 
         expected = np.zeros(len(t), dtype=bool)

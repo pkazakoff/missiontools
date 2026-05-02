@@ -35,7 +35,7 @@ class GroundStation:
         passes = gs.access(sc,
                            t_start = np.datetime64('2025-01-01', 'us'),
                            t_end   = np.datetime64('2025-01-03', 'us'),
-                           el_min  = 5.0)
+                           el_min_deg  = 5.0)
     """
 
     lat: float
@@ -44,9 +44,7 @@ class GroundStation:
 
     def __post_init__(self) -> None:
         if not -90.0 <= self.lat <= 90.0:
-            raise ValueError(
-                f"lat must be in [-90, 90] degrees, got {self.lat}"
-            )
+            raise ValueError(f"lat must be in [-90, 90] degrees, got {self.lat}")
         self._antennas: list = []
 
     @property
@@ -74,18 +72,18 @@ class GroundStation:
             If the antenna is already attached to a Spacecraft.
         """
         from .comm.antenna import AbstractAntenna
+
         if not isinstance(antenna, AbstractAntenna):
             raise TypeError(
                 f"antenna must be an AbstractAntenna instance, "
                 f"got {type(antenna).__name__!r}"
             )
         if antenna._spacecraft is not None:
-            raise ValueError(
-                "Antenna is already attached to a Spacecraft."
-            )
+            raise ValueError("Antenna is already attached to a Spacecraft.")
         antenna._ground_station = self
-        if antenna._mode == 'ground':
+        if antenna._mode == "ground":
             from .orbit.frames import enu_to_ecef
+
             antenna._boresight_ecef = enu_to_ecef(
                 antenna._boresight_enu,
                 np.radians(self.lat),
@@ -94,12 +92,12 @@ class GroundStation:
         self._antennas.append(antenna)
 
     def access(
-            self,
-            spacecraft,
-            t_start:  np.datetime64,
-            t_end:    np.datetime64,
-            el_min:   float = 0.0,
-            max_step: np.timedelta64 = np.timedelta64(30, 's'),
+        self,
+        spacecraft,
+        t_start: np.datetime64,
+        t_end: np.datetime64,
+        el_min_deg: float = 0.0,
+        max_step: np.timedelta64 = np.timedelta64(30, "s"),
     ) -> list[tuple[np.datetime64, np.datetime64]]:
         """Compute access intervals between this ground station and a spacecraft.
 
@@ -111,7 +109,7 @@ class GroundStation:
             Start of the search window.
         t_end : np.datetime64
             End of the search window.
-        el_min : float, optional
+        el_min_deg : float, optional
             Minimum elevation angle (deg).  Contacts below this elevation
             are not reported.  Default 0.
         max_step : np.timedelta64, optional
@@ -127,13 +125,13 @@ class GroundStation:
             ``datetime64[us]``.  Returns an empty list if no access occurs.
         """
         return earth_access_intervals(
-            t_start          = t_start,
-            t_end            = t_end,
-            keplerian_params = spacecraft.keplerian_params,
-            lat              = np.radians(self.lat),
-            lon              = np.radians(self.lon),
-            alt              = self.alt,
-            el_min           = np.radians(el_min),
-            propagator_type  = spacecraft.propagator_type,
-            max_step         = max_step,
+            t_start=t_start,
+            t_end=t_end,
+            keplerian_params=spacecraft.keplerian_params,
+            lat=np.radians(self.lat),
+            lon=np.radians(self.lon),
+            alt=self.alt,
+            el_min=np.radians(el_min_deg),
+            propagator_type=spacecraft.propagator_type,
+            max_step=max_step,
         )

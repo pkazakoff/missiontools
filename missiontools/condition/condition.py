@@ -240,8 +240,8 @@ class SpaceGroundAccessCondition(AbstractCondition):
 
     Visibility is the standard above-horizon test: the elevation angle
     from the geodetic up-direction at the ground station to the
-    spacecraft must meet or exceed ``el_min``.  Earth blockage is implicit
-    for ``el_min >= 0``.
+    spacecraft must meet or exceed ``el_min_deg``.  Earth blockage is implicit
+    for ``el_min_deg >= 0``.
 
     Parameters
     ----------
@@ -249,7 +249,7 @@ class SpaceGroundAccessCondition(AbstractCondition):
         The spacecraft whose visibility is being tested.
     ground_station : GroundStation
         The observing ground station.
-    el_min : float, optional
+    el_min_deg : float, optional
         Minimum elevation angle (degrees).  Default 5.0.
 
     Raises
@@ -267,11 +267,11 @@ class SpaceGroundAccessCondition(AbstractCondition):
 
         sc = Spacecraft(...)
         gs = GroundStation(lat=51.5, lon=-0.1)
-        cond = SpaceGroundAccessCondition(sc, gs, el_min=5.0)
+        cond = SpaceGroundAccessCondition(sc, gs, el_min_deg=5.0)
         cond.at(np.datetime64('2025-01-01', 'us'))   # -> bool
     """
 
-    def __init__(self, spacecraft, ground_station, el_min: float = 5.0) -> None:
+    def __init__(self, spacecraft, ground_station, el_min_deg: float = 5.0) -> None:
         from ..spacecraft import Spacecraft
         from ..ground_station import GroundStation
 
@@ -285,19 +285,19 @@ class SpaceGroundAccessCondition(AbstractCondition):
                 f"ground_station must be a GroundStation instance, "
                 f"got {type(ground_station).__name__!r}"
             )
-        if not np.isfinite(el_min):
-            raise ValueError(f"el_min must be finite, got {el_min}")
+        if not np.isfinite(el_min_deg):
+            raise ValueError(f"el_min_deg must be finite, got {el_min_deg}")
         super().__init__()
         self._sc = spacecraft
         self._gs = ground_station
-        self._el_min_deg = float(el_min)
+        self._el_min_deg = float(el_min_deg)
         self._el_min_rad = np.radians(self._el_min_deg)
 
     def __repr__(self) -> str:
         return (
             f"SpaceGroundAccessCondition("
             f"spacecraft={self._sc!r}, ground_station={self._gs!r}, "
-            f"el_min={self._el_min_deg})"
+            f"el_min_deg={self._el_min_deg})"
         )
 
     def _compute(self, t: npt.NDArray[np.datetime64]) -> npt.NDArray[np.bool_]:

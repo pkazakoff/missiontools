@@ -1,18 +1,18 @@
 import numpy as np
 import numpy.typing as npt
 from datetime import datetime
-from .constants import EARTH_MU, EARTH_J2, EARTH_MEAN_RADIUS, EARTH_SEMI_MAJOR_AXIS
+from .constants import (
+    EARTH_MU,
+    EARTH_J2,
+    EARTH_MEAN_RADIUS,
+    EARTH_SEMI_MAJOR_AXIS,
+    _J2000_US,
+)
 
-# Mean solar motion: 2π rad per Julian year (365.25 days)
-_N_SUN = 2.0 * np.pi / (365.25 * 86400.0)   # rad/s
+_N_SUN = 2.0 * np.pi / (365.25 * 86400.0)  # rad/s
 
-# J2000.0 epoch (same as frames.py)
-_J2000_US = np.datetime64('2000-01-01T12:00:00', 'us')
-
-# Earth mean sidereal rotation period (s) — used for GEO semi-major axis
 _SIDEREAL_DAY_S = 86164.100352
 
-# Critical inclination for frozen apsides (HEO design), in radians
 _I_CRIT = np.radians(63.4349)
 
 
@@ -35,36 +35,161 @@ def _parse_hms(s: str) -> float:
         If the string cannot be parsed or the resulting time is outside
         [0, 24).
     """
-    parts = s.strip().split(':')
+    parts = s.strip().split(":")
     if len(parts) not in (2, 3):
-        raise ValueError(
-            f"Time string must be 'HH:MM' or 'HH:MM:SS', got '{s}'"
-        )
+        raise ValueError(f"Time string must be 'HH:MM' or 'HH:MM:SS', got '{s}'")
     try:
-        h = int(parts[0]) + int(parts[1]) / 60.0 + (int(parts[2]) if len(parts) == 3 else 0) / 3600.0
+        h = int(parts[0])
+        m = int(parts[1])
+        sec = int(parts[2]) if len(parts) == 3 else 0
     except ValueError:
         raise ValueError(
             f"Time string must contain integer hour/minute/second fields, got '{s}'"
         )
-    if not (0.0 <= h < 24.0):
-        raise ValueError(
-            f"Parsed time {h:.4f} h is outside [0, 24), got '{s}'"
+    if not (0 <= sec < 60):
+        raise ValueError(f"Seconds must be in [0, 60), got {sec} in '{s}'")
+    h_decimal = h + m / 60.0 + sec / 3600.0
+    if not (0.0 <= h_decimal < 24.0):
+        raise ValueError(f"Parsed time {h_decimal:.4f} h is outside [0, 24), got '{s}'")
+    return h_decimal
+
+
+def _propagate_twobody(t_e, a, e, i, raan, arg_p, ma, central_body_mu):
+    mean_motion = np.sqrt(central_body_mu / a**3)
+    p = a * (1 - e**2)
+
+    ma_t = (ma + mean_motion * t_e) % (2 * np.pi)
+
+    if e == 0.0:
+        ta = ma_t
+        E = ma_t
+    else:
+        E = ma_t
+        for _ in range(5):
+            E = E - (E - e * np.sin(E) - ma_t) / (1 - e * np.cos(E))
+        ta = 2.0 * np.arctan2(
+            np.sqrt(1 + e) * np.sin(E / 2), np.sqrt(1 - e) * np.cos(E / 2)
         )
-    return h
+
+    if e == 0.0:
+        rc = a
+    else:
+        rc = a * (1 - e * np.cos(E))
+
+    or_t = rc * np.array([np.cos(ta), np.sin(ta), np.repeat(0.0, ta.shape[0])])
+
+    ov_t = (np.sqrt(central_body_mu * a) / rc) * np.array(
+        [-1 * np.sin(E), np.sqrt(1 - e**2) * np.cos(E), np.repeat(0.0, E.shape[0])]
+    )
+
+    rot_raan = np.array(
+        [
+            [np.cos(raan), np.sin(raan), 0.0],
+            [-np.sin(raan), np.cos(raan), 0.0],
+            [0.0, 0.0, 1.0],
+        ]
+    )
+
+    rot_i = np.array(
+        [[1.0, 0.0, 0.0], [0.0, np.cos(i), np.sin(i)], [0.0, -np.sin(i), np.cos(i)]]
+    )
+
+    rot_arg_p = np.array(
+        [
+            [np.cos(arg_p), np.sin(arg_p), 0.0],
+            [-np.sin(arg_p), np.cos(arg_p), 0.0],
+            [0.0, 0.0, 1.0],
+        ]
+    )
+
+    R = rot_raan @ rot_i @ rot_arg_p
+
+    r = (R @ or_t).T
+    v = (R @ ov_t).T
+    return r, v
 
 
-def propagate_analytical(t: list[datetime] | npt.NDArray[np.datetime64],
-                         epoch: datetime | np.datetime64,
-                         a: float | np.floating,
-                         e: float | np.floating,
-                         i: float | np.floating,
-                         arg_p: float | np.floating,
-                         raan: float | np.floating,
-                         ma: float | np.floating,
-                         propagator_type: str = "twobody",
-                         central_body_mu: float | np.floating = EARTH_MU,
-                         central_body_j2: float | np.floating = EARTH_J2,
-                         central_body_radius: float | np.floating = EARTH_MEAN_RADIUS) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
+def _propagate_j2(t_e, a, e, i, raan, arg_p, ma, central_body_mu, central_body_j2):
+    mean_motion = np.sqrt(central_body_mu / a**3)
+    p = a * (1 - e**2)
+
+    j2_r2 = central_body_j2 / central_body_mu
+
+    raan_dot = (-3.0 * mean_motion * j2_r2) / (2.0 * p**2) * np.cos(i)
+    raan_arr = raan + raan_dot * t_e
+
+    arg_p_dot = (
+        (3.0 * mean_motion * j2_r2) / (4.0 * p**2) * (4.0 - 5.0 * np.sin(i) ** 2)
+    )
+    arg_p_arr = arg_p + arg_p_dot * t_e
+
+    ma_dot = (
+        (3.0 * mean_motion * j2_r2 * np.sqrt(1 - e**2))
+        / (4.0 * p**2)
+        * (2.0 - 3.0 * np.sin(i) ** 2)
+    )
+    ma_t = (ma + (mean_motion + ma_dot) * t_e) % (2 * np.pi)
+
+    if e == 0.0:
+        ta = ma_t
+        E = ma_t
+    else:
+        E = ma_t
+        for _ in range(5):
+            E = E - (E - e * np.sin(E) - ma_t) / (1 - e * np.cos(E))
+        ta = 2.0 * np.arctan2(
+            np.sqrt(1 + e) * np.sin(E / 2), np.sqrt(1 - e) * np.cos(E / 2)
+        )
+
+    if e == 0.0:
+        rc = a
+    else:
+        rc = a * (1 - e * np.cos(E))
+
+    or_t = rc * np.array([np.cos(ta), np.sin(ta), np.repeat(0.0, ta.shape[0])])
+
+    ov_t = (np.sqrt(central_body_mu * a) / rc) * np.array(
+        [-1 * np.sin(E), np.sqrt(1 - e**2) * np.cos(E), np.repeat(0.0, E.shape[0])]
+    )
+
+    z = np.zeros_like(raan_arr)
+    o = np.ones_like(raan_arr)
+
+    cos_raan, sin_raan = np.cos(raan_arr), np.sin(raan_arr)
+    rot_raan = np.array(
+        [[cos_raan, sin_raan, z], [-sin_raan, cos_raan, z], [z, z, o]]
+    ).transpose(2, 0, 1)
+
+    rot_i = np.array(
+        [[1.0, 0.0, 0.0], [0.0, np.cos(i), np.sin(i)], [0.0, -np.sin(i), np.cos(i)]]
+    )
+
+    cos_arg_p, sin_arg_p = np.cos(arg_p_arr), np.sin(arg_p_arr)
+    rot_arg_p = np.array(
+        [[cos_arg_p, sin_arg_p, z], [-sin_arg_p, cos_arg_p, z], [z, z, o]]
+    ).transpose(2, 0, 1)
+
+    R = rot_raan @ (rot_i @ rot_arg_p)
+
+    r = np.einsum("nij,jn->ni", R, or_t)
+    v = np.einsum("nij,jn->ni", R, ov_t)
+    return r, v
+
+
+def propagate_analytical(
+    t: list[datetime] | npt.NDArray[np.datetime64],
+    epoch: datetime | np.datetime64,
+    a: float | np.floating,
+    e: float | np.floating,
+    i: float | np.floating,
+    arg_p: float | np.floating,
+    raan: float | np.floating,
+    ma: float | np.floating,
+    propagator_type: str = "twobody",
+    central_body_mu: float | np.floating = EARTH_MU,
+    central_body_j2: float | np.floating = EARTH_J2,
+    central_body_radius: float | np.floating = EARTH_SEMI_MAJOR_AXIS,
+) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
     """Propagate a Keplerian orbit analytically and return ECI state vectors.
 
     Advances the mean anomaly from ``epoch`` to each time in ``t`` using the
@@ -105,7 +230,7 @@ def propagate_analytical(t: list[datetime] | npt.NDArray[np.datetime64],
         Equatorial radius of the central body (m).  Accepted for API
         consistency when unpacking a ``keplerian_params`` dict (see
         :attr:`~missiontools.Spacecraft.keplerian_params`) but not used in
-        the propagation calculation.  Defaults to ``EARTH_MEAN_RADIUS``.
+        the propagation calculation.  Defaults to ``EARTH_SEMI_MAJOR_AXIS``.
 
     Returns
     -------
@@ -117,151 +242,33 @@ def propagate_analytical(t: list[datetime] | npt.NDArray[np.datetime64],
     if a <= 0:
         raise ValueError(f"Semi-major axis must be positive, got a={a}")
     if not (0 <= e < 1):
-        raise ValueError(f"Eccentricity must satisfy 0 <= e < 1 for elliptical orbits, got e={e}")
+        raise ValueError(
+            f"Eccentricity must satisfy 0 <= e < 1 (only elliptical orbits "
+            f"are supported; parabolic and hyperbolic are not), got e={e}"
+        )
     if not (0 <= i <= np.pi):
         raise ValueError(f"Inclination must be in [0, π], got i={i}")
     if central_body_mu <= 0:
-        raise ValueError(f"central_body_mu must be positive, got central_body_mu={central_body_mu}")
-    
-    # cast datetimes to microsecond precision
-    t = np.asarray(t, dtype='datetime64[us]')
+        raise ValueError(
+            f"central_body_mu must be positive, got central_body_mu={central_body_mu}"
+        )
 
-    # get time offset from epoch in floating-point seconds
-    t_e = (t - np.datetime64(epoch).astype('datetime64[us]')).astype(np.float64)*1e-6
-
-    # compute mean motion
-    mean_motion = np.sqrt(central_body_mu/a**3)
-
-    # compute semi-latus rectum
-    p = a*(1-e**2)
+    t = np.asarray(t, dtype="datetime64[us]")
+    t_e = (t - np.datetime64(epoch).astype("datetime64[us]")).astype(np.float64) * 1e-6
 
     if propagator_type == "j2":
-        # compute secular J2 terms
-        # central_body_j2 = mu * J2_dim * R^2, so dividing by mu gives J2_dim * R^2 (m^2),
-        # the quantity that appears in the Vallado secular rate formulas.
-        j2_r2 = central_body_j2 / central_body_mu
-
-        # Vallado eq. 9-37
-        raan_dot = (-3.0*mean_motion*j2_r2) / \
-                   (2.0*p**2) * np.cos(i)
-        raan = raan + raan_dot*t_e
-
-        # Vallado eq. 9-39
-        arg_p_dot = (3.0*mean_motion*j2_r2) / \
-                    (4.0*p**2) * (4.0-5.0*np.sin(i)**2)
-        arg_p = arg_p + arg_p_dot*t_e
-
-        # Vallado eq. 9-41
-        ma_dot = (3.0*mean_motion*j2_r2*np.sqrt(1-e**2)) / \
-                 (4.0*p**2) * (2.0 - 3.0*np.sin(i)**2)
-        ma_t = (ma + (mean_motion + ma_dot)*t_e) % (2*np.pi)
+        return _propagate_j2(
+            t_e, a, e, i, raan, arg_p, ma, central_body_mu, central_body_j2
+        )
     else:
-        # two body case - raan, arg_p, ma remain at initial values
-
-        # compute mean anomaly
-        ma_t = (ma + mean_motion*t_e) % (2*np.pi)
-
-    # compute eccentric and true anomaly
-    if (e == 0.0):
-        # optimization for circular orbits
-        ta = ma_t
-        E = ma_t
-    else:
-        # solve for the eccentric anomaly
-        # 5 newton iterations sufficient for double FP
-        E = ma_t
-        for n in range(5):
-            E = E - (E-e*np.sin(E) - ma_t)/(1-e*np.cos(E))
-        
-        # compute the true anomaly
-        ta = 2.0*np.arctan2(np.sqrt(1+e)*np.sin(E/2),
-                            np.sqrt(1-e)*np.cos(E/2))
-    
-    # compute distance to central body
-    if (e == 0.0):
-        rc = a
-    else:
-        rc = a*(1-e*np.cos(E))
-
-    # get position in orbit plane
-    or_t = rc*np.array([np.cos(ta),
-                        np.sin(ta),
-                        np.repeat(0.0, ta.shape[0])])
-    
-    # get velocity in orbit plane
-    ov_t = (np.sqrt(central_body_mu*a)/rc)*np.array([-1*np.sin(E),
-                                                     np.sqrt(1-e**2)*np.cos(E),
-                                                     np.repeat(0.0, E.shape[0])])
-
-    if propagator_type == "twobody":
-        # since rotations are static over time for two body,
-        # fastest way to implement for large number of times
-        # is construct a single combined rotation matrix
-
-        # construct rotation matrices
-        # Rz(-raan) - rotate about Z by -RAAN
-        rot_raan = np.array([[ np.cos(raan),  np.sin(raan),  0.0],
-                            [-np.sin(raan),  np.cos(raan),  0.0],
-                            [ 0.0,           0.0,           1.0]])
-
-        # Rx(-i) - rotate about X by -inclination
-        rot_i = np.array([[1.0,  0.0,          0.0        ],
-                        [0.0,  np.cos(i),    np.sin(i)  ],
-                        [0.0, -np.sin(i),    np.cos(i)  ]])
-
-        # Rz(-arg_p)  — rotate about Z by -argument of perigee
-        rot_arg_p = np.array([[ np.cos(arg_p),  np.sin(arg_p),  0.0],
-                            [-np.sin(arg_p),  np.cos(arg_p),  0.0],
-                            [ 0.0,            0.0,            1.0]])
-
-        # Combined perifocal to ECI
-        R = rot_raan @ rot_i @ rot_arg_p
-
-        # generate output vectors
-        r = (R @ or_t).T
-        v = (R @ ov_t).T
-    else:
-        # For J2, raan and arg_p are (N,) arrays (secular drift applied above),
-        # so each timestep needs its own rotation matrix.
-        # Build (N, 3, 3) rotation stacks and compose with einsum.
-
-        z = np.zeros_like(raan)
-        o = np.ones_like(raan)
-
-        # Rz(-raan[k]) for each k — shape (N, 3, 3)
-        cos_raan, sin_raan = np.cos(raan), np.sin(raan)
-        rot_raan = np.array([[ cos_raan,  sin_raan, z],
-                             [-sin_raan,  cos_raan, z],
-                             [z,          z,        o]]).transpose(2, 0, 1)
-
-        # Rx(-i) — scalar i, shape (3, 3)
-        rot_i = np.array([[1.0,  0.0,         0.0       ],
-                          [0.0,  np.cos(i),   np.sin(i) ],
-                          [0.0, -np.sin(i),   np.cos(i) ]])
-
-        # Rz(-arg_p[k]) for each k — shape (N, 3, 3)
-        cos_arg_p, sin_arg_p = np.cos(arg_p), np.sin(arg_p)
-        rot_arg_p = np.array([[ cos_arg_p,  sin_arg_p, z],
-                              [-sin_arg_p,  cos_arg_p, z],
-                              [z,           z,         o]]).transpose(2, 0, 1)
-
-        # Combined R[k] = rot_raan[k] @ rot_i @ rot_arg_p[k]
-        # (3,3) @ (N,3,3) broadcasts to (N,3,3); then (N,3,3) @ (N,3,3) → (N,3,3)
-        R = rot_raan @ (rot_i @ rot_arg_p)
-
-        # Apply each R[k] to the corresponding perifocal column: or_t is (3,N)
-        r = np.einsum('nij,jn->ni', R, or_t)
-        v = np.einsum('nij,jn->ni', R, ov_t)
-
-    # result
-    return r, v
+        return _propagate_twobody(t_e, a, e, i, raan, arg_p, ma, central_body_mu)
 
 
 def sun_synchronous_inclination(
-        a: float | np.floating,
-        e: float | np.floating = 0.0,
-        central_body_mu: float | np.floating = EARTH_MU,
-        central_body_j2: float | np.floating = EARTH_J2,
+    a: float | np.floating,
+    e: float | np.floating = 0.0,
+    central_body_mu: float | np.floating = EARTH_MU,
+    central_body_j2: float | np.floating = EARTH_J2,
 ) -> float:
     """Return the inclination (rad) required for a sun-synchronous orbit.
 
@@ -316,17 +323,13 @@ def sun_synchronous_inclination(
     if a <= 0:
         raise ValueError(f"Semi-major axis must be positive, got a={a}")
     if not (0 <= e < 1):
-        raise ValueError(
-            f"Eccentricity must satisfy 0 <= e < 1, got e={e}"
-        )
+        raise ValueError(f"Eccentricity must satisfy 0 <= e < 1, got e={e}")
     if central_body_mu <= 0:
-        raise ValueError(
-            f"central_body_mu must be positive, got {central_body_mu}"
-        )
+        raise ValueError(f"central_body_mu must be positive, got {central_body_mu}")
 
-    n      = np.sqrt(central_body_mu / a**3)           # mean motion (rad/s)
-    p      = a * (1.0 - e**2)                          # semi-latus rectum (m)
-    j2_r2  = central_body_j2 / central_body_mu         # J₂_dim × R²  (m²)
+    n = np.sqrt(central_body_mu / a**3)  # mean motion (rad/s)
+    p = a * (1.0 - e**2)  # semi-latus rectum (m)
+    j2_r2 = central_body_j2 / central_body_mu  # J₂_dim × R²  (m²)
 
     cos_i = (-2.0 * _N_SUN * p**2) / (3.0 * n * j2_r2)
 
@@ -340,13 +343,13 @@ def sun_synchronous_inclination(
 
 
 def sun_synchronous_orbit(
-        altitude:            float | np.floating,
-        local_time_at_node:  str,
-        node_type:           str = 'ascending',
-        epoch:               datetime | np.datetime64 | None = None,
-        central_body_mu:     float | np.floating = EARTH_MU,
-        central_body_j2:     float | np.floating = EARTH_J2,
-        central_body_radius: float | np.floating = EARTH_SEMI_MAJOR_AXIS,
+    altitude: float | np.floating,
+    local_time_at_node: str,
+    node_type: str = "ascending",
+    epoch: datetime | np.datetime64 | None = None,
+    central_body_mu: float | np.floating = EARTH_MU,
+    central_body_j2: float | np.floating = EARTH_J2,
+    central_body_radius: float | np.floating = EARTH_SEMI_MAJOR_AXIS,
 ) -> dict:
     """Return Keplerian elements for a circular sun-synchronous orbit.
 
@@ -394,82 +397,68 @@ def sun_synchronous_orbit(
         ``'ascending'`` or ``'descending'``, ``altitude`` is negative, or
         no sun-synchronous orbit exists for the given parameters.
     """
-    # --- epoch ---
     if epoch is None:
         epoch = _J2000_US
-    epoch_us = np.asarray(epoch, dtype='datetime64[us]')
+    epoch_us = np.asarray(epoch, dtype="datetime64[us]")
 
-    # --- parse local time string ---
     try:
         lsol = _parse_hms(local_time_at_node)
     except ValueError as exc:
-        raise ValueError(
-            f"local_time_at_node: {exc}"
-        ) from exc
+        raise ValueError(f"local_time_at_node: {exc}") from exc
 
-    # --- validate node_type ---
-    if node_type == 'ascending':
-        ltan = lsol                       # LTAN  = specified time
-    elif node_type == 'descending':
-        ltan = (lsol + 12.0) % 24.0      # LTAN  = LTDN + 12 h
+    if node_type == "ascending":
+        ltan = lsol
+    elif node_type == "descending":
+        ltan = (lsol + 12.0) % 24.0
     else:
         raise ValueError(
             f"node_type must be 'ascending' or 'descending', got '{node_type}'"
         )
 
-    # --- validate altitude ---
     if altitude < 0.0:
         raise ValueError(f"altitude must be non-negative, got {altitude} m")
 
-    # --- Sun's right ascension at epoch (low-precision, ~0.01° accuracy) ---
-    # Algorithm: Astronomical Almanac "low-precision" solar coordinates
-    d = float((epoch_us - _J2000_US).astype(np.float64)) * 1e-6 / 86400.0   # days from J2000
+    d = float((epoch_us - _J2000_US).astype(np.float64)) * 1e-6 / 86400.0
 
-    L_deg = (280.460 + 0.9856474 * d) % 360.0        # Sun mean longitude (deg)
-    g_rad = np.radians((357.528 + 0.9856003 * d) % 360.0)  # Sun mean anomaly (rad)
+    L_deg = (280.460 + 0.9856474 * d) % 360.0
+    g_rad = np.radians((357.528 + 0.9856003 * d) % 360.0)
 
-    # Ecliptic longitude (rad)
     lambda_sun = np.radians(L_deg) + np.radians(
         1.915 * np.sin(g_rad) + 0.020 * np.sin(2.0 * g_rad)
     )
 
-    # Mean obliquity of the ecliptic (rad)
     epsilon = np.radians(23.439 - 0.0000004 * d)
 
-    # Sun's right ascension (rad), wrapped to [0, 2π)
     ra_sun = float(
-        np.arctan2(np.cos(epsilon) * np.sin(lambda_sun),
-                   np.cos(lambda_sun)) % (2.0 * np.pi)
+        np.arctan2(np.cos(epsilon) * np.sin(lambda_sun), np.cos(lambda_sun))
+        % (2.0 * np.pi)
     )
 
-    # --- RAAN from LTAN and Sun's RA ---
-    # Derivation: LTAN (h) = 12 + (RAAN − RA_sun) × 12/π
     raan = float((ra_sun + (ltan - 12.0) * (np.pi / 12.0)) % (2.0 * np.pi))
 
-    # --- orbital elements ---
     a = float(central_body_radius) + float(altitude)
     i = sun_synchronous_inclination(a, 0.0, central_body_mu, central_body_j2)
 
     return {
-        'epoch':               epoch_us,
-        'a':                   a,
-        'e':                   0.0,
-        'i':                   i,
-        'arg_p':               0.0,
-        'raan':                raan,
-        'ma':                  0.0,
-        'central_body_mu':     float(central_body_mu),
-        'central_body_j2':     float(central_body_j2),
-        'central_body_radius': float(central_body_radius),
+        "epoch": epoch_us,
+        "a": a,
+        "e": 0.0,
+        "i": i,
+        "arg_p": 0.0,
+        "raan": raan,
+        "ma": 0.0,
+        "central_body_mu": float(central_body_mu),
+        "central_body_j2": float(central_body_j2),
+        "central_body_radius": float(central_body_radius),
     }
 
 
 def geostationary_orbit(
-        longitude_deg:       float,
-        epoch:               datetime | np.datetime64 | None = None,
-        central_body_mu:     float = EARTH_MU,
-        central_body_j2:     float = EARTH_J2,
-        central_body_radius: float = EARTH_SEMI_MAJOR_AXIS,
+    longitude_deg: float,
+    epoch: datetime | np.datetime64 | None = None,
+    central_body_mu: float = EARTH_MU,
+    central_body_j2: float = EARTH_J2,
+    central_body_radius: float = EARTH_SEMI_MAJOR_AXIS,
 ) -> dict:
     """Return Keplerian elements for a geostationary orbit.
 
@@ -507,43 +496,40 @@ def geostationary_orbit(
     """
     if epoch is None:
         epoch = _J2000_US
-    epoch_us = np.asarray(epoch, dtype='datetime64[us]')
+    epoch_us = np.asarray(epoch, dtype="datetime64[us]")
 
-    # Semi-major axis: Kepler III with sidereal day period
     a = (central_body_mu * (_SIDEREAL_DAY_S / (2.0 * np.pi)) ** 2) ** (1.0 / 3.0)
 
-    # GMST at epoch: the ECI right ascension of the prime meridian
     from .frames import gmst as _gmst
+
     theta = float(_gmst(np.array([epoch_us]))[0])
 
-    # For i=0, RAAN=0, arg_p=0 the ECI angle of the satellite equals MA.
-    # Geographic longitude = ECI angle − GMST  →  MA = GMST + longitude_rad
     ma = float((theta + np.radians(longitude_deg)) % (2.0 * np.pi))
 
     return {
-        'epoch':               epoch_us,
-        'a':                   a,
-        'e':                   0.0,
-        'i':                   0.0,
-        'raan':                0.0,
-        'arg_p':               0.0,
-        'ma':                  ma,
-        'central_body_mu':     float(central_body_mu),
-        'central_body_j2':     float(central_body_j2),
-        'central_body_radius': float(central_body_radius),
+        "epoch": epoch_us,
+        "a": a,
+        "e": 0.0,
+        "i": 0.0,
+        "raan": 0.0,
+        "arg_p": 0.0,
+        "ma": ma,
+        "central_body_mu": float(central_body_mu),
+        "central_body_j2": float(central_body_j2),
+        "central_body_radius": float(central_body_radius),
     }
 
 
 def highly_elliptical_orbit(
-        period_s:             float,
-        e:                    float,
-        epoch:                datetime | np.datetime64,
-        apogee_solar_time:    str,
-        apogee_longitude_deg: float,
-        arg_p_deg:            float = 270.0,
-        central_body_mu:      float = EARTH_MU,
-        central_body_j2:      float = EARTH_J2,
-        central_body_radius:  float = EARTH_SEMI_MAJOR_AXIS,
+    period_s: float,
+    e: float,
+    epoch: datetime | np.datetime64,
+    apogee_solar_time: str,
+    apogee_longitude_deg: float,
+    arg_p_deg: float = 270.0,
+    central_body_mu: float = EARTH_MU,
+    central_body_j2: float = EARTH_J2,
+    central_body_radius: float = EARTH_SEMI_MAJOR_AXIS,
 ) -> dict:
     """Return Keplerian elements for a critically inclined highly elliptical orbit.
 
@@ -606,65 +592,48 @@ def highly_elliptical_orbit(
     if period_s <= 0.0:
         raise ValueError(f"period_s must be positive, got {period_s}")
     if not (0.0 < e < 1.0):
-        raise ValueError(
-            f"Eccentricity must satisfy 0 < e < 1 for a HEO, got e={e}"
-        )
+        raise ValueError(f"Eccentricity must satisfy 0 < e < 1 for a HEO, got e={e}")
 
-    epoch_us = np.asarray(epoch, dtype='datetime64[us]')
+    epoch_us = np.asarray(epoch, dtype="datetime64[us]")
 
-    # --- Semi-major axis from period (Kepler III) ---
     a = (central_body_mu * (period_s / (2.0 * np.pi)) ** 2) ** (1.0 / 3.0)
 
-    # --- Critical inclination ---
-    # arg_p closest to 90° → southern hemisphere (i = π − i_crit)
-    # arg_p closest to 270° → northern hemisphere (i = i_crit)
     arg_p_mod = arg_p_deg % 360.0
     if (arg_p_mod - 90.0) ** 2 < (arg_p_mod - 270.0) ** 2:
-        i_rad = np.pi - _I_CRIT   # southern hemisphere
+        i_rad = np.pi - _I_CRIT
     else:
-        i_rad = _I_CRIT            # northern hemisphere (default)
+        i_rad = _I_CRIT
     arg_p_rad = np.radians(arg_p_deg)
 
-    # --- Parse apogee solar time ---
     lmat_h = _parse_hms(apogee_solar_time)
 
-    # --- UTC time-of-day at apogee (mean solar time approximation) ---
-    # LST ≈ UTC + longitude/15  →  UTC ≈ LST − longitude/15
     utc_apo_h = (lmat_h - apogee_longitude_deg / 15.0) % 24.0
 
-    # --- Find first T_apo strictly after epoch ---
-    epoch_day = epoch_us.astype('datetime64[D]').astype('datetime64[us]')
-    # Construct candidate T_apo on the same calendar day as epoch
-    T_apo_us = epoch_day + np.timedelta64(int(utc_apo_h * 3.6e9), 'us')
+    epoch_day = epoch_us.astype("datetime64[D]").astype("datetime64[us]")
+    T_apo_us = epoch_day + np.timedelta64(int(utc_apo_h * 3.6e9), "us")
     if T_apo_us <= epoch_us:
-        T_apo_us = T_apo_us + np.timedelta64(1, 'D')
+        T_apo_us = T_apo_us + np.timedelta64(1, "D")
     delta_t_s = float((T_apo_us - epoch_us).astype(np.float64) * 1e-6)
 
-    # --- RAAN from ECI geometry at apogee ---
-    # At apogee (TA=180°), the ECI right ascension of the sub-satellite point is
-    # RA_apo = φ − RAAN, where φ = atan2(sin(arg_p)·cos(i), −cos(arg_p)).
-    # Inverting: RAAN = φ − RA_apo.
     from .frames import gmst as _gmst
+
     theta_gmst = float(_gmst(np.array([T_apo_us]))[0])
     ra_apo = float((theta_gmst + np.radians(apogee_longitude_deg)) % (2.0 * np.pi))
-    phi  = float(np.arctan2(np.sin(arg_p_rad) * np.cos(i_rad),
-                            -np.cos(arg_p_rad)))
+    phi = float(np.arctan2(np.sin(arg_p_rad) * np.cos(i_rad), -np.cos(arg_p_rad)))
     raan = float((phi - ra_apo) % (2.0 * np.pi))
 
-    # --- Initial mean anomaly ---
-    # MA = π at apogee; propagate backwards to epoch.
-    n  = 2.0 * np.pi / period_s
+    n = 2.0 * np.pi / period_s
     ma = float((np.pi - n * delta_t_s) % (2.0 * np.pi))
 
     return {
-        'epoch':               epoch_us,
-        'a':                   a,
-        'e':                   float(e),
-        'i':                   float(i_rad),
-        'raan':                raan,
-        'arg_p':               float(arg_p_rad % (2.0 * np.pi)),
-        'ma':                  ma,
-        'central_body_mu':     float(central_body_mu),
-        'central_body_j2':     float(central_body_j2),
-        'central_body_radius': float(central_body_radius),
+        "epoch": epoch_us,
+        "a": a,
+        "e": float(e),
+        "i": float(i_rad),
+        "raan": raan,
+        "arg_p": float(arg_p_rad % (2.0 * np.pi)),
+        "ma": ma,
+        "central_body_mu": float(central_body_mu),
+        "central_body_j2": float(central_body_j2),
+        "central_body_radius": float(central_body_radius),
     }

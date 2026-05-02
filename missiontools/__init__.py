@@ -135,11 +135,10 @@ Submodules
     Antenna gain and link budget analysis.
 :mod:`~missiontools.thermal`
     Thermal analysis: lumped-parameter networks and surface thermal models.
-:mod:`~missiontools.radiation`
-    Radiation environment *(planned)*.
+
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "Spacecraft",

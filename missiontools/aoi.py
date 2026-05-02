@@ -8,7 +8,7 @@ def _geom_crosses_am(geom) -> bool:
     """Return True if *geom*'s bounding box extends outside [-180, 180] longitude."""
     if geom.is_empty:
         return False
-    b = geom.bounds   # (minx, miny, maxx, maxy)
+    b = geom.bounds  # (minx, miny, maxx, maxy)
     return b[2] > 180.0 or b[0] < -180.0
 
 
@@ -77,7 +77,7 @@ class AoI:
         self._lon = np.radians(np.asarray(lon_deg, dtype=np.float64))
         self._geometry = None
         self._shapefile_path = None
-        self._point_density_m2 = None
+        self._point_density_km2 = None
         self._crosses_am = False
 
     # ------------------------------------------------------------------
@@ -86,22 +86,22 @@ class AoI:
 
     @classmethod
     def _from_geometry(
-            cls,
-            geom,
-            crosses_am: bool,
-            density_m2: float,
-            shapefile_path: str | None = None,
-    ) -> 'AoI':
+        cls,
+        geom,
+        crosses_am: bool,
+        density_km2: float,
+        shapefile_path: str | None = None,
+    ) -> "AoI":
         """Construct a lazy AoI backed by a Shapely geometry.
 
         Points are not sampled until first access via a point-returning property.
         """
         obj = object.__new__(cls)
-        obj._lat = None          # lazy: computed on demand
+        obj._lat = None  # lazy: computed on demand
         obj._lon = None
         obj._geometry = geom
         obj._shapefile_path = shapefile_path
-        obj._point_density_m2 = density_m2
+        obj._point_density_km2 = density_km2
         obj._crosses_am = crosses_am
         return obj
 
@@ -113,13 +113,14 @@ class AoI:
         """Compute sample points from geometry if they have not been generated yet."""
         if self._lat is not None:
             return
-        from .coverage.coverage import sample_from_geometry
+        from .coverage.sampling import sample_from_geometry
+
         if self._geometry.is_empty:
             self._lat = np.empty(0, dtype=np.float64)
             self._lon = np.empty(0, dtype=np.float64)
         else:
             self._lat, self._lon = sample_from_geometry(
-                self._geometry, self._crosses_am, self._point_density_m2
+                self._geometry, self._crosses_am, self._point_density_km2
             )
 
     # ------------------------------------------------------------------
@@ -165,13 +166,12 @@ class AoI:
         return len(self._lat)
 
     def __repr__(self) -> str:
-        pts = (f'{len(self._lat)} points'
-               if self._lat is not None else 'not yet sampled')
+        pts = f"{len(self._lat)} points" if self._lat is not None else "not yet sampled"
         if self._shapefile_path:
-            return f'AoI({pts}, shapefile={self._shapefile_path!r})'
+            return f"AoI({pts}, shapefile={self._shapefile_path!r})"
         if self._geometry is not None:
-            return f'AoI({pts}, {type(self._geometry).__name__})'
-        return f'AoI({pts})'
+            return f"AoI({pts}, {type(self._geometry).__name__})"
+        return f"AoI({pts})"
 
     # ------------------------------------------------------------------
     # Set operations
@@ -185,60 +185,74 @@ class AoI:
                 "or a set operation to create a geometry-backed AoI."
             )
 
-    def __or__(self, other: 'AoI') -> 'AoI':
+    def __or__(self, other: "AoI") -> "AoI":
         """Union — all area covered by either AoI."""
-        self._require_geometry('|')
-        other._require_geometry('|')
+        self._require_geometry("|")
+        other._require_geometry("|")
         geom = self._geometry.union(other._geometry)
-        return AoI._from_geometry(geom, _geom_crosses_am(geom), self._point_density_m2)
+        return AoI._from_geometry(geom, _geom_crosses_am(geom), self._point_density_km2)
 
-    def __and__(self, other: 'AoI') -> 'AoI':
+    def __and__(self, other: "AoI") -> "AoI":
         """Intersection — area common to both AoIs."""
-        self._require_geometry('&')
-        other._require_geometry('&')
+        self._require_geometry("&")
+        other._require_geometry("&")
         geom = self._geometry.intersection(other._geometry)
-        return AoI._from_geometry(geom, _geom_crosses_am(geom), self._point_density_m2)
+        return AoI._from_geometry(geom, _geom_crosses_am(geom), self._point_density_km2)
 
-    def __sub__(self, other: 'AoI') -> 'AoI':
+    def __sub__(self, other: "AoI") -> "AoI":
         """Difference — area in this AoI that is not in *other*."""
-        self._require_geometry('-')
-        other._require_geometry('-')
+        self._require_geometry("-")
+        other._require_geometry("-")
         geom = self._geometry.difference(other._geometry)
-        return AoI._from_geometry(geom, _geom_crosses_am(geom), self._point_density_m2)
+        return AoI._from_geometry(geom, _geom_crosses_am(geom), self._point_density_km2)
 
-    def __xor__(self, other: 'AoI') -> 'AoI':
+    def __xor__(self, other: "AoI") -> "AoI":
         """Symmetric difference — area in either AoI but not both."""
-        self._require_geometry('^')
-        other._require_geometry('^')
+        self._require_geometry("^")
+        other._require_geometry("^")
         geom = self._geometry.symmetric_difference(other._geometry)
-        return AoI._from_geometry(geom, _geom_crosses_am(geom), self._point_density_m2)
+        return AoI._from_geometry(geom, _geom_crosses_am(geom), self._point_density_km2)
+
+    def __sub__(self, other: "AoI") -> "AoI":
+        """Difference — area in this AoI that is not in *other*."""
+        self._require_geometry("-")
+        other._require_geometry("-")
+        geom = self._geometry.difference(other._geometry)
+        return AoI._from_geometry(geom, _geom_crosses_am(geom), self._point_density_km2)
+
+    def __xor__(self, other: "AoI") -> "AoI":
+        """Symmetric difference — area in either AoI but not both."""
+        self._require_geometry("^")
+        other._require_geometry("^")
+        geom = self._geometry.symmetric_difference(other._geometry)
+        return AoI._from_geometry(geom, _geom_crosses_am(geom), self._point_density_km2)
 
     # ------------------------------------------------------------------
     # Factory classmethods
     # ------------------------------------------------------------------
 
     @classmethod
-    def _from_radians(cls, lat_rad: npt.NDArray, lon_rad: npt.NDArray) -> 'AoI':
+    def _from_radians(cls, lat_rad: npt.NDArray, lon_rad: npt.NDArray) -> "AoI":
         """Construct directly from radian arrays, skipping the deg→rad conversion."""
         obj = object.__new__(cls)
         obj._lat = np.asarray(lat_rad, dtype=np.float64)
         obj._lon = np.asarray(lon_rad, dtype=np.float64)
         obj._geometry = None
         obj._shapefile_path = None
-        obj._point_density_m2 = None
+        obj._point_density_km2 = None
         obj._crosses_am = False
         return obj
 
     @classmethod
     def from_region(
-            cls,
-            lat_min_deg: float | None = None,
-            lat_max_deg: float | None = None,
-            lon_min_deg: float | None = None,
-            lon_max_deg: float | None = None,
-            *,
-            point_density: float = 1e5,
-    ) -> 'AoI':
+        cls,
+        lat_min_deg: float | None = None,
+        lat_max_deg: float | None = None,
+        lon_min_deg: float | None = None,
+        lon_max_deg: float | None = None,
+        *,
+        point_density: float = 1e5,
+    ) -> "AoI":
         """Sample an AoI from a rectangular lat/lon region.
 
         Points are generated lazily on first access.
@@ -267,10 +281,8 @@ class AoI:
         from shapely.geometry import box
         from shapely.ops import unary_union
 
-        density_m2 = point_density * 1e6
-
         lat_min = -90.0 if lat_min_deg is None else float(lat_min_deg)
-        lat_max =  90.0 if lat_max_deg is None else float(lat_max_deg)
+        lat_max = 90.0 if lat_max_deg is None else float(lat_max_deg)
 
         if lon_min_deg is None and lon_max_deg is None:
             geom = box(-180.0, lat_min, 180.0, lat_max)
@@ -283,26 +295,28 @@ class AoI:
                 crosses_am = False
             else:
                 # antimeridian-crossing: two boxes in normal [-180, 180] coordinates
-                geom = unary_union([
-                    box(lon_min, lat_min, 180.0, lat_max),
-                    box(-180.0, lat_min, lon_max, lat_max),
-                ])
+                geom = unary_union(
+                    [
+                        box(lon_min, lat_min, 180.0, lat_max),
+                        box(-180.0, lat_min, lon_max, lat_max),
+                    ]
+                )
                 crosses_am = False
         else:
             raise ValueError(
                 "lon_min_deg and lon_max_deg must both be None or both be specified."
             )
 
-        return cls._from_geometry(geom, crosses_am, density_m2)
+        return cls._from_geometry(geom, crosses_am, point_density)
 
     @classmethod
     def from_shapefile(
-            cls,
-            path: str,
-            *,
-            feature_index: int | None = None,
-            point_density: float = 1e5,
-    ) -> 'AoI':
+        cls,
+        path: str,
+        *,
+        feature_index: int | None = None,
+        point_density: float = 1e5,
+    ) -> "AoI":
         """Sample an AoI from an ESRI Shapefile polygon.
 
         Stores the Shapely geometry; points are generated lazily on first access.
@@ -325,16 +339,17 @@ class AoI:
         from .coverage import load_shapefile_geometry
 
         geom, crosses_am = load_shapefile_geometry(path, feature_index)
-        return cls._from_geometry(geom, crosses_am, point_density * 1e6,
-                                   shapefile_path=str(path))
+        return cls._from_geometry(
+            geom, crosses_am, point_density, shapefile_path=str(path)
+        )
 
     @classmethod
     def from_geography(
-            cls,
-            geography: str,
-            *,
-            point_density: float = 1e5,
-    ) -> 'AoI':
+        cls,
+        geography: str,
+        *,
+        point_density: float = 1e5,
+    ) -> "AoI":
         """Sample an AoI from a Natural Earth geography by name or code.
 
         Stores the Shapely geometry; points are generated lazily on first access.
@@ -360,4 +375,4 @@ class AoI:
         from .coverage import geography_geometry
 
         geom, crosses_am = geography_geometry(geography)
-        return cls._from_geometry(geom, crosses_am, point_density * 1e6)
+        return cls._from_geometry(geom, crosses_am, point_density)
